@@ -1,0 +1,57 @@
+{% extends 'detector/base.html' %}
+{% block title %}Inbox{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h1 class="page-title" style="margin-bottom:0">Inbox scan</h1>
+  <div style="font-size:13px;color:var(--c-text3)">{{ total_count }} email{{ total_count|pluralize }}</div>
+</div>
+<div class="panel">
+  <div class="toolbar">
+    <form method="get" style="display:contents">
+      <input class="search-box" name="q" value="{{ search }}" placeholder="Search sender or subject…" autocomplete="off">
+      <input type="hidden" name="status" value="{{ status_filter }}">
+      <button type="submit" class="btn btn-outline btn-sm">Search</button>
+    </form>
+    <a href="?status=all"      class="filter-tab {% if status_filter == 'all' %}active{% endif %}">All</a>
+    <a href="?status=phishing" class="filter-tab {% if status_filter == 'phishing' %}active danger{% endif %}">Phishing</a>
+    <a href="?status=suspicious" class="filter-tab {% if status_filter == 'suspicious' %}active warn{% endif %}">Suspicious</a>
+    <a href="?status=safe"     class="filter-tab {% if status_filter == 'safe' %}active ok{% endif %}">Safe</a>
+  </div>
+  {% if emails %}
+  <table class="etable">
+    <thead><tr><th>Sender</th><th>Subject</th><th>Risk</th><th>Status</th><th>Date</th><th></th></tr></thead>
+    <tbody>
+    {% for e in emails %}
+    <tr onclick="location.href='/email/{{ e.pk }}/'">
+      <td>
+        <div style="font-weight:500;color:var(--c-text);font-size:13px">{{ e.sender_domain }}</div>
+        <div style="font-size:11px;color:var(--c-text3)" class="mono">{{ e.sender|truncatechars:36 }}</div>
+      </td>
+      <td style="max-width:240px">
+        {% if not e.is_read %}<span style="display:inline-block;width:6px;height:6px;background:var(--c-info);border-radius:50%;margin-right:7px;vertical-align:middle;flex-shrink:0"></span>{% endif %}
+        {% if '[Found in Spam]' in e.why_flagged %}<span class="tag tag-susp" style="font-size:10px;margin-right:6px;vertical-align:middle">SPAM</span>{% endif %}
+        <span style="color:var(--c-text)">{{ e.subject|truncatechars:50 }}</span>
+      </td>
+      <td>
+        <div class="risk-wrap">
+          <div class="risk-bar"><div class="risk-fill" style="width:{{ e.risk_percent }}%;background:{% if e.status == 'phishing' %}var(--c-danger){% elif e.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}"></div></div>
+          <span class="risk-num" style="color:{% if e.status == 'phishing' %}var(--c-danger){% elif e.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}">{{ e.risk_percent }}%</span>
+        </div>
+      </td>
+      <td>{% if e.status == 'phishing' %}<span class="tag tag-phish">Phishing</span>{% elif e.status == 'suspicious' %}<span class="tag tag-susp">Suspicious</span>{% elif e.status == 'safe' %}<span class="tag tag-safe">Safe</span>{% else %}<span class="tag tag-pend">Pending</span>{% endif %}</td>
+      <td style="font-size:12px;color:var(--c-text3)">{{ e.received_at|date:"M d, H:i" }}</td>
+      <td><a href="/email/{{ e.pk }}/" class="btn btn-outline btn-sm" onclick="event.stopPropagation()">View</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <svg viewBox="0 0 40 40"><path d="M5 8h30v24H5V8zm0 0l15 14L35 8" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+    <h3>No emails found</h3>
+    <p>{% if search %}No results for "{{ search }}"{% else %}Connect Gmail or scan an email to get started{% endif %}</p>
+    <a href="/scan/" class="btn btn-primary">Scan an email</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends 'detector/base.html' %}
+{% block title %}Analytics{% endblock %}
+{% block content %}
+
+<div class="stats-grid">
+  <div class="stat-card red"><div class="stat-label">Detection rate</div><div class="stat-value">{{ detection_rate }}%</div><div class="stat-change">of all emails</div></div>
+  <div class="stat-card green"><div class="stat-label">Total scanned</div><div class="stat-value">{{ total }}</div><div class="stat-change">all time</div></div>
+  <div class="stat-card blue"><div class="stat-label">Phishing blocked</div><div class="stat-value">{{ phishing }}</div><div class="stat-change"><span class="dn">threats found</span></div></div>
+  <div class="stat-card amber"><div class="stat-label">Suspicious</div><div class="stat-value">{{ suspicious }}</div><div class="stat-change">flagged for review</div></div>
+</div>
+
+<div class="grid-2" style="margin-bottom:20px">
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Phishing — 30 day trend</div></div>
+    <div style="padding:16px;height:200px"><canvas id="monthChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Distribution</div></div>
+    <div style="padding:16px;height:200px;display:flex;align-items:center;justify-content:center">
+      <canvas id="pieChart" style="max-width:180px;max-height:180px"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Top phishing sender domains</div></div>
+  <div class="panel-body">
+    {% if top_senders %}
+    {% for s in top_senders %}
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="font-family:var(--mono);font-size:12px;color:var(--text2);min-width:200px">{{ s.sender_domain }}</div>
+      <div style="flex:1;background:var(--bg3);height:6px;border-radius:3px">
+        <div style="background:var(--c-accent);height:100%;border-radius:3px;width:{{ s.count|floatformat:0 }}0%"></div>
+      </div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--c-accent);min-width:24px">{{ s.count }}</div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="color:var(--text3);font-size:12px;font-family:var(--mono)">No data yet. Scan some emails first.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Model info — multi-modal deep learning</div></div>
+  <div class="panel-body">
+    <div class="grid-3" style="margin-bottom:16px">
+      <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-bottom:6px">APPROACH</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text)">Multi-modal fusion</div>
+      </div>
+      <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-bottom:6px">MODALITIES</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text)">Text + URL + Meta + Attach</div>
+      </div>
+      <div style="background:var(--bg3);border-radius:8px;padding:14px;text-align:center">
+        <div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-bottom:6px">DATASET</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text)">Nazario + Enron</div>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.8">
+      The engine fuses four feature modalities with weighted scoring: text embeddings (40%), URL features (30%), sender metadata (20%), and attachment analysis (10%). Emails scoring above 65% are classified as phishing; 35–64% as suspicious; below 35% as safe.
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+{% block extra_js %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+const monthly = {{ monthly_json|safe }};
+new Chart(document.getElementById('monthChart').getContext('2d'), {
+  type:'line',
+  data:{
+    labels: monthly.map(d=>d.day),
+    datasets:[{
+      label:'Phishing',data:monthly.map(d=>d.count),
+      borderColor:'#ff4444',backgroundColor:'rgba(255,68,68,.1)',
+      fill:true,tension:.4,pointRadius:2,borderWidth:2
+    }]
+  },
+  options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#4a5568',maxTicksLimit:8,font:{size:10}},grid:{color:'rgba(255,255,255,.04)'}},
+      y:{ticks:{color:'#4a5568',font:{size:10},stepSize:1},grid:{color:'rgba(255,255,255,.04)'},beginAtZero:true}
+    }}
+});
+
+new Chart(document.getElementById('pieChart').getContext('2d'), {
+  type:'doughnut',
+  data:{
+    labels:['Phishing','Suspicious','Safe'],
+    datasets:[{
+      data:[{{ phishing }},{{ suspicious }},{{ safe }}],
+      backgroundColor:['rgba(255,68,68,.8)','rgba(245,158,11,.8)','rgba(34,197,94,.8)'],
+      borderWidth:0,hoverOffset:4
+    }]
+  },
+  options:{responsive:true,maintainAspectRatio:true,plugins:{legend:{labels:{color:'#8892a4',font:{size:11}}}}}
+});
+</script>
+{% endblock %}

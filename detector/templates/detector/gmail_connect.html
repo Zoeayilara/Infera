@@ -1,0 +1,158 @@
+{% extends 'detector/base.html' %}
+{% block title %}Connect Gmail{% endblock %}
+{% block content %}
+<div style="max-width:620px">
+
+  <div style="margin-bottom:28px">
+    <h1 class="page-title" style="margin-bottom:6px">Connect your Gmail</h1>
+    <p style="color:var(--c-text2);font-size:13px;line-height:1.7">
+      Infera connects via IMAP and scans <strong style="color:var(--c-text)">both your Inbox and Spam folder</strong> —
+      because most real phishing emails are already in Spam. Your actual password is never used.
+    </p>
+  </div>
+
+  <!-- What we scan -->
+  <div style="background:var(--c-info-s);border:1px solid var(--c-info-b);border-radius:10px;
+    padding:14px 18px;margin-bottom:20px;display:flex;gap:14px">
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--c-info)" style="flex-shrink:0;margin-top:1px">
+      <path d="M1 3h14v10H1V3zm1 1v1.5l6 4 6-4V4H2zm0 3v5h12V7L8 11 2 7z"/>
+    </svg>
+    <div>
+      <div style="font-size:13px;font-weight:600;color:var(--c-info);margin-bottom:6px">
+        Infera scans two folders automatically:
+      </div>
+      <div style="font-size:13px;color:var(--c-info);display:flex;flex-direction:column;gap:5px">
+        <div>📥 <strong>Inbox</strong> — regular emails (safe + any phishing Gmail missed)</div>
+        <div>🚨 <strong>Spam folder</strong> — where most real phishing lives, already flagged by Gmail</div>
+      </div>
+      <div style="font-size:12px;color:var(--c-text2);margin-top:8px;line-height:1.6">
+        This means even if your inbox looks all safe, your spam folder will contain the real threats
+        that Infera's AI will classify and explain to you with full analysis.
+      </div>
+    </div>
+  </div>
+
+  <!-- Step by step -->
+  <div class="panel" style="margin-bottom:20px">
+    <div class="panel-head">
+      <div class="panel-title">How to get your Gmail App Password (one-time setup)</div>
+    </div>
+    <div class="panel-body">
+      <div style="display:flex;flex-direction:column;gap:16px">
+
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="width:26px;height:26px;background:var(--c-info-s);border:1px solid var(--c-info-b);
+            border-radius:7px;display:flex;align-items:center;justify-content:center;
+            flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-info)">1</div>
+          <div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:3px">Enable 2-Step Verification</div>
+            <div style="font-size:12px;color:var(--c-text2);line-height:1.6">
+              Go to <a href="https://myaccount.google.com/security" target="_blank"
+              style="color:var(--c-info)">myaccount.google.com/security</a> and turn on
+              <strong style="color:var(--c-text)">2-Step Verification</strong>.
+              App Passwords only appear after this is enabled.
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="width:26px;height:26px;background:var(--c-info-s);border:1px solid var(--c-info-b);
+            border-radius:7px;display:flex;align-items:center;justify-content:center;
+            flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-info)">2</div>
+          <div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:3px">Enable IMAP in Gmail settings</div>
+            <div style="font-size:12px;color:var(--c-text2);line-height:1.6">
+              In Gmail → Settings (gear icon) → See all settings →
+              <strong style="color:var(--c-text)">Forwarding and POP/IMAP</strong> →
+              Enable IMAP → Save Changes.
+              <span style="color:var(--c-danger);font-weight:500">Required for spam folder access.</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="width:26px;height:26px;background:var(--c-info-s);border:1px solid var(--c-info-b);
+            border-radius:7px;display:flex;align-items:center;justify-content:center;
+            flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-info)">3</div>
+          <div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:3px">Create an App Password</div>
+            <div style="font-size:12px;color:var(--c-text2);line-height:1.6">
+              Go to <a href="https://myaccount.google.com/apppasswords" target="_blank"
+              style="color:var(--c-info)">myaccount.google.com/apppasswords</a>.
+              Type <code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:11px">Infera</code>
+              → click <strong style="color:var(--c-text)">Create</strong>.
+              Google gives you a 16-character password like:
+              <code style="background:var(--c-bg);padding:2px 8px;border-radius:4px;font-size:11px;color:var(--c-ok)">abcd efgh ijkl mnop</code>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:14px;align-items:flex-start">
+          <div style="width:26px;height:26px;background:var(--c-ok-s);border:1px solid var(--c-ok-b);
+            border-radius:7px;display:flex;align-items:center;justify-content:center;
+            flex-shrink:0;font-size:12px;font-weight:700;color:var(--c-ok)">4</div>
+          <div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:3px">Paste it below and connect</div>
+            <div style="font-size:12px;color:var(--c-text2);line-height:1.6">
+              Enter your Gmail address and that 16-character App Password below.
+              Infera will immediately scan your Inbox and Spam folder.
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection form -->
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">Connect your Gmail account</div>
+    </div>
+    <div class="panel-body">
+
+      {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+      {% endif %}
+
+      <form method="post">
+        {% csrf_token %}
+        <div class="form-group">
+          <label class="form-label">Gmail address</label>
+          <input class="form-input" type="email" name="email_address"
+            value="{{ email_address|default:'' }}"
+            placeholder="yourname@gmail.com" required autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label">App Password</label>
+          <input class="form-input" type="password" name="app_password"
+            placeholder="abcd efgh ijkl mnop" required autocomplete="off">
+          <div class="form-hint">This is the 16-character App Password from Google — NOT your real Gmail password</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Emails to fetch per folder</label>
+          <select class="form-input" name="fetch_limit" style="cursor:pointer">
+            <option value="20">20 most recent per folder</option>
+            <option value="50" selected>50 most recent per folder</option>
+            <option value="100">100 most recent per folder</option>
+          </select>
+          <div class="form-hint">Infera scans both Inbox and Spam, so selecting 50 = up to 100 emails total</div>
+        </div>
+        <button type="submit" class="btn btn-primary"
+          style="width:100%;justify-content:center;padding:13px;font-size:14px">
+          Test connection &amp; start scanning →
+        </button>
+      </form>
+
+      <div style="margin-top:16px;padding:12px 14px;background:var(--c-bg);border-radius:8px;
+        font-size:12px;color:var(--c-text3);line-height:1.7">
+        <strong style="color:var(--c-text2)">Privacy:</strong>
+        Emails are processed locally on this machine only. Your App Password is stored
+        encoded in the local SQLite database and used only to connect to Gmail's servers.
+        Nothing is sent to any external service.
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

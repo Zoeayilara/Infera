@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Infera — Smart detection through intelligent analysis{% endblock %}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fraunces:ital,opsz,wght@0,9..144,700;1,9..144,400&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--primary:#1a56db;--primary-s:#eff6ff;--text:#1a1916;--text2:#6b6860;--text3:#a09e99;
+  --bg:#f7f6f3;--surface:#fff;--border:#e4e2dc;--border2:#d0cec7;
+  --font:'Inter',sans-serif;--disp:'Fraunces',Georgia,serif}
+body{background:var(--bg);color:var(--text);font-family:var(--font);
+  min-height:100vh;display:flex;flex-direction:column}
+a{color:inherit;text-decoration:none}
+.auth-nav{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 5%;height:56px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:8px;font-family:var(--disp);font-size:16px;font-weight:700}
+.logo-mark{width:28px;height:28px;background:linear-gradient(135deg,#2563eb,#06b6d4);border-radius:7px;
+  display:flex;align-items:center;justify-content:center}
+.logo-mark svg{width:14px;height:14px;fill:white}
+.logo em{color:var(--primary);font-style:normal}
+.auth-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px}
+.auth-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:36px;width:100%;max-width:440px;box-shadow:0 4px 24px rgba(0,0,0,.06)}
+.auth-head{margin-bottom:28px;text-align:center}
+.auth-head h1{font-family:var(--disp);font-size:26px;font-weight:700;margin-bottom:6px;letter-spacing:-.3px}
+.auth-head p{font-size:14px;color:var(--text2)}
+.form-group{margin-bottom:14px}
+.form-label{display:block;font-size:12px;font-weight:600;color:var(--text2);
+  margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.form-input{width:100%;background:var(--bg);border:1px solid var(--border2);
+  border-radius:8px;padding:10px 13px;color:var(--text);font-size:14px;font-family:var(--font);
+  outline:none;transition:border-color .15s,box-shadow .15s}
+.form-input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-s)}
+.form-input::placeholder{color:var(--text3)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn-submit{width:100%;background:var(--primary);color:white;border:none;border-radius:9px;
+  padding:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:6px;
+  font-family:var(--font);transition:filter .15s}
+.btn-submit:hover{filter:brightness(1.08)}
+.auth-footer{text-align:center;margin-top:22px;font-size:13px;color:var(--text3)}
+.auth-footer a{color:var(--primary);font-weight:500}
+.error-box{background:var(--primary-s);border:1px solid var(--primary-b);border-radius:8px;
+  padding:11px 14px;margin-bottom:16px;font-size:13px;color:var(--primary)}
+.error-box li{margin-left:16px;margin-top:3px}
+.divider-or{display:flex;align-items:center;gap:12px;margin:18px 0;color:var(--text3);font-size:12px}
+.divider-or::before,.divider-or::after{content:'';flex:1;height:1px;background:var(--border)}
+</style>
+</head>
+<body>
+<nav class="auth-nav">
+  <a href="/" class="logo">
+    <div class="logo-mark"><svg viewBox="0 0 16 16"><path d="M8 1L1 4v4c0 4 3 7 7 8 4-1 7-4 7-8V4L8 1zm0 2.2 4.5 2v3.5C12.5 12.3 10.5 13 8 14c-2.5-.7-4.5-1.7-4.5-4.3V5.2L8 3.2z"/><circle cx="8" cy="9" r="1.4"/></svg></div>
+    Infera
+  </a>
+  {% block nav_action %}{% endblock %}
+</nav>
+<div class="auth-wrap">
+  <div class="auth-card">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+</body>
+</html>

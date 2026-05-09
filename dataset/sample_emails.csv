@@ -1,0 +1,14 @@
+sender,subject,body,label
+account-security@paypa1-support.net,URGENT: Your PayPal account has been limited,"Dear Customer, Your PayPal account has been limited. Verify now: http://paypa1-support.net/verify?token=a8f3kx29",phishing
+noreply@microsoft-license-alert.org,Windows license expired — renew immediately,"Your Windows license has expired. Renew: http://microsoft-license-alert.org/renew",phishing
+alerts@amaz0n-order-support.com,Your order has been cancelled,"Update payment: http://amaz0n-order-support.com/payment",phishing
+admin@uniportal-stafflogin.xyz,Staff portal credentials update required,"Login: http://uniportal-stafflogin.xyz/staff-login",phishing
+delivery@dhl-parcel-track.net,Your package could not be delivered,"Reschedule: http://dhl-parcel-track.net/redeliver?id=88213",phishing
+billing@netflix-account-update.co,Payment failed — update billing,"Update: http://netflix-account-update.co/update",phishing
+security@hsbc-online-verify.com,Your HSBC account requires verification,"Verify: http://hsbc-online-verify.com/secure-login",phishing
+internship@globalfund2026.org,You have been selected for a grant,"Claim: http://globalfund2026.org/claim",suspicious
+hr@remote-jobs-worldwide.net,Remote job offer — $3000/month,"Please reply with your bank details for payroll.",suspicious
+john.okafor@gmail.com,Meeting notes from yesterday,"Hi team, please find attached the meeting notes. Best, John",safe
+newsletter@techcrunch.com,This week in AI,"Top stories from TechCrunch this week. Read more at https://techcrunch.com",safe
+registrar@uniabuja.edu.ng,Second semester exam timetable,"Dear Students, the timetable is attached. Registrar's Office.",safe
+noreply@github.com,Pull request opened,"A pull request was opened. View: https://github.com",safe

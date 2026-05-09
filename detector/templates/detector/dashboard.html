@@ -1,0 +1,194 @@
+{% extends 'detector/base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+  <div>
+    <h1 class="page-title" style="margin-bottom:4px">Welcome back, {{ request.user.first_name|default:request.user.username }} 👋</h1>
+    <p style="font-size:13px;color:var(--c-text3)">Here's your inbox security overview.</p>
+  </div>
+  <a href="/scan/" class="btn btn-primary">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="white"><path d="M8 1v14M1 8h14" stroke="white" stroke-width="2" fill="none"/></svg>
+    Scan email
+  </a>
+</div>
+
+<div class="stats-grid">
+  <a href="/inbox/" class="stat-card info">
+    <div class="stat-label">Total scanned</div>
+    <div class="stat-value">{{ total }}</div>
+    <div class="stat-sub">all emails</div>
+  </a>
+  <a href="/inbox/?status=phishing" class="stat-card danger">
+    <div class="stat-label">Phishing</div>
+    <div class="stat-value">{{ phishing }}</div>
+    <div class="stat-sub"><strong>high risk</strong> threats</div>
+  </a>
+  <a href="/inbox/?status=suspicious" class="stat-card warn">
+    <div class="stat-label">Suspicious</div>
+    <div class="stat-value">{{ suspicious }}</div>
+    <div class="stat-sub">needs review</div>
+  </a>
+  <a href="/inbox/?status=safe" class="stat-card ok">
+    <div class="stat-label">Safe</div>
+    <div class="stat-value">{{ safe }}</div>
+    <div class="stat-sub">clean emails</div>
+  </a>
+</div>
+
+<div class="grid-2" style="margin-bottom:20px">
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">
+        <svg viewBox="0 0 16 16"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6" y="5" width="3" height="10" rx="1"/><rect x="11" y="1" width="3" height="14" rx="1"/></svg>
+        Threat trend — 7 days
+      </div>
+    </div>
+    <div style="padding:16px 18px 18px"><canvas id="trendChart" height="130"></canvas></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">
+        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 4v4l3 2" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>
+        Modality weights
+      </div>
+    </div>
+    <div style="padding:16px 18px">
+      <div style="margin-bottom:13px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px">
+          <span style="color:var(--c-text2)">Text embedding (TF-IDF)</span>
+          <span style="font-weight:600;color:var(--c-danger)">40%</span>
+        </div>
+        <div style="background:var(--c-border);height:4px;border-radius:2px">
+          <div style="background:var(--c-danger);width:40%;height:100%;border-radius:2px"></div>
+        </div>
+      </div>
+      <div style="margin-bottom:13px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px">
+          <span style="color:var(--c-text2)">URL features</span>
+          <span style="font-weight:600;color:var(--c-info)">30%</span>
+        </div>
+        <div style="background:var(--c-border);height:4px;border-radius:2px">
+          <div style="background:var(--c-info);width:30%;height:100%;border-radius:2px"></div>
+        </div>
+      </div>
+      <div style="margin-bottom:13px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px">
+          <span style="color:var(--c-text2)">Sender metadata</span>
+          <span style="font-weight:600;color:var(--c-warn)">20%</span>
+        </div>
+        <div style="background:var(--c-border);height:4px;border-radius:2px">
+          <div style="background:var(--c-warn);width:20%;height:100%;border-radius:2px"></div>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px">
+          <span style="color:var(--c-text2)">Attachment scan</span>
+          <span style="font-weight:600;color:var(--c-ok)">10%</span>
+        </div>
+        <div style="background:var(--c-border);height:4px;border-radius:2px">
+          <div style="background:var(--c-ok);width:10%;height:100%;border-radius:2px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Model info banner -->
+<div style="background:var(--c-info-s);border:1px solid var(--c-info-b);border-radius:10px;
+  padding:12px 18px;margin-bottom:20px;display:flex;align-items:center;gap:12px">
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--c-info)" style="flex-shrink:0">
+    <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 3a1 1 0 110 2 1 1 0 010-2zm0 3v5" fill="none" stroke="var(--c-info)" stroke-width="1.3"/>
+  </svg>
+  <div style="font-size:12px;color:var(--c-info)">
+    <strong>MLP Neural Network active</strong> — 3 hidden layers (256→128→64 neurons), ReLU activation, Adam optimiser.
+    Trained on Nazario Phishing Corpus + Enron dataset.
+    <a href="/analytics/" style="color:var(--c-info);font-weight:600;margin-left:6px">View model metrics →</a>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:20px">
+  <div class="panel-head">
+    <div class="panel-title">Recent threats</div>
+    <a href="/inbox/?status=phishing" class="btn btn-outline btn-sm">View all</a>
+  </div>
+  {% if recent_threats %}
+  <table class="etable">
+    <thead><tr><th>Sender</th><th>Subject</th><th>Risk</th><th>Status</th><th>Received</th><th></th></tr></thead>
+    <tbody>
+    {% for e in recent_threats %}
+    <tr onclick="location.href='/email/{{ e.pk }}/'">
+      <td>
+        <div style="font-weight:500;color:var(--c-text);font-size:12px">{{ e.sender_domain }}</div>
+        <div style="font-size:11px;color:var(--c-text3)" class="mono">{{ e.sender|truncatechars:34 }}</div>
+      </td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--c-text)">{{ e.subject|truncatechars:52 }}</td>
+      <td>
+        <div class="risk-wrap">
+          <div class="risk-bar"><div class="risk-fill" style="width:{{ e.risk_percent }}%;background:{% if e.status == 'phishing' %}var(--c-danger){% elif e.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}"></div></div>
+          <span class="risk-num" style="color:{% if e.status == 'phishing' %}var(--c-danger){% elif e.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}">{{ e.risk_percent }}%</span>
+        </div>
+      </td>
+      <td>{% if e.status == 'phishing' %}<span class="tag tag-phish">Phishing</span>{% elif e.status == 'suspicious' %}<span class="tag tag-susp">Suspicious</span>{% else %}<span class="tag tag-safe">Safe</span>{% endif %}</td>
+      <td style="font-size:12px;color:var(--c-text3)">{{ e.received_at|timesince }} ago</td>
+      <td><a href="/email/{{ e.pk }}/" class="btn btn-outline btn-sm" onclick="event.stopPropagation()">View</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No threats detected yet.</p>
+    <a href="/scan/" class="btn btn-primary">Scan your first email</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Live alerts</div></div>
+  <div style="padding:0 18px">
+    {% if recent_alerts %}
+    {% for alert in recent_alerts %}
+    <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--c-border)">
+      <div style="width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0;
+        background:{% if alert.level == 'danger' %}var(--c-danger){% elif alert.level == 'warning' %}var(--c-warn){% else %}var(--c-info){% endif %}"></div>
+      <div>
+        <div style="font-size:13px;color:var(--c-text2);line-height:1.5">{{ alert.message }}</div>
+        <div style="font-size:11px;color:var(--c-text3);margin-top:2px" class="mono">{{ alert.timestamp|timesince }} ago</div>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="padding:20px 0;font-size:13px;color:var(--c-text3)">No alerts yet — your inbox looks clean.</div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
+{% block extra_js %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+const trend = {{ trend_json|safe }};
+const isDark = document.documentElement.dataset.theme === 'dark';
+const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+const tickColor = isDark ? '#5c5a55' : '#a09e99';
+new Chart(document.getElementById('trendChart').getContext('2d'), {
+  type: 'bar',
+  data: {
+    labels: trend.map(d => d.day),
+    datasets: [
+      {label:'Phishing',   data: trend.map(d => d.phishing),   backgroundColor:'rgba(197,48,48,.75)', borderRadius:4},
+      {label:'Suspicious', data: trend.map(d => d.suspicious), backgroundColor:'rgba(146,64,14,.5)',  borderRadius:4},
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {legend: {labels: {color: tickColor, font: {size:11, family:'Inter'}}}},
+    scales: {
+      x: {ticks:{color:tickColor, font:{size:11}}, grid:{color:gridColor}},
+      y: {ticks:{color:tickColor, font:{size:11}, stepSize:1}, grid:{color:gridColor}, beginAtZero:true}
+    }
+  }
+});
+</script>
+{% endblock %}

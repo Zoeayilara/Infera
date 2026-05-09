@@ -1,0 +1,75 @@
+{% extends 'detector/base.html' %}
+{% block title %}Gmail Accounts{% endblock %}
+{% block content %}
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h1 style="font-size:20px;font-weight:700">Connected Gmail accounts</h1>
+  <a href="/gmail/connect/" class="btn btn-primary">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="white"><path d="M8 1v14M1 8h14" stroke="white" stroke-width="2" fill="none"/></svg>
+    Connect Gmail
+  </a>
+</div>
+
+{% if accounts %}
+{% for account in accounts %}
+<div class="panel" style="margin-bottom:14px">
+  <div class="panel-body" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">
+
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="width:42px;height:42px;border-radius:10px;background:var(--red2);border:1px solid rgba(255,68,68,.2);display:flex;align-items:center;justify-content:center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M20 4H4C2.9 4 2 4.9 2 6v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 2l-8 5-8-5h16zm0 12H4V8l8 5 8-5v10z" fill="var(--primary)"/>
+        </svg>
+      </div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:var(--text)">{{ account.email_address }}</div>
+        <div style="font-size:11px;font-family:var(--mono);color:var(--text3);margin-top:2px">
+          Connected {{ account.connected_at|timesince }} ago
+          {% if account.last_synced %}
+          · Last synced {{ account.last_synced|timesince }} ago
+          {% else %}
+          · Never synced
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:20px">
+      <div style="text-align:center">
+        <div style="font-size:20px;font-weight:700;color:var(--text);font-family:var(--mono)">{{ account.total_synced }}</div>
+        <div style="font-size:10px;font-family:var(--mono);color:var(--text3)">SCANNED</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:20px;font-weight:700;color:var(--primary);font-family:var(--mono)">
+          {{ account.emails.filter.phishing|default:"—" }}
+        </div>
+        <div style="font-size:10px;font-family:var(--mono);color:var(--text3)">THREATS</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <a href="/gmail/sync/{{ account.pk }}/" class="btn btn-primary btn-sm">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="white"><path d="M13.5 2.5A6.5 6.5 0 002 8M2.5 13.5A6.5 6.5 0 0014 8" stroke="white" stroke-width="1.5" fill="none"/><path d="M11 2l3 1-1 3M2 14l1-3 3 1" fill="white"/></svg>
+        Sync now
+      </a>
+      <a href="/gmail/disconnect/{{ account.pk }}/"
+         class="btn btn-outline btn-sm"
+         onclick="return confirm('Disconnect {{ account.email_address }}? Scanned emails will be kept.')">
+        Disconnect
+      </a>
+    </div>
+
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="panel">
+  <div style="padding:60px;text-align:center">
+    <div style="font-size:36px;margin-bottom:14px">📬</div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:8px">No Gmail accounts connected</div>
+    <div style="font-size:13px;color:var(--text2);margin-bottom:20px">Connect your Gmail account to start scanning your real inbox automatically.</div>
+    <a href="/gmail/connect/" class="btn btn-primary">Connect Gmail account</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends 'detector/base.html' %}
+{% block title %}Scan Email{% endblock %}
+{% block content %}
+<div class="page-title">Scan an Email</div>
+<div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start;max-width:900px">
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Email details</div></div>
+    <div class="panel-body">
+      {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+      <form method="post">
+        {% csrf_token %}
+        <div class="form-group"><label class="form-label">Sender email *</label>
+          <input class="form-input" type="email" name="sender" placeholder="noreply@suspicious-domain.xyz" required></div>
+        <div class="form-group"><label class="form-label">Subject *</label>
+          <input class="form-input" type="text" name="subject" placeholder="Urgent: verify your account" required></div>
+        <div class="form-group"><label class="form-label">Email body *</label>
+          <textarea class="form-textarea" name="body" placeholder="Paste the full email content here…" required style="min-height:180px"></textarea></div>
+        <div class="form-group"><label class="form-label">Attachment filename (optional)</label>
+          <input class="form-input" type="text" name="attachment_name" placeholder="e.g. invoice.exe or receipt.pdf"></div>
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px">Run AI analysis →</button>
+      </form>
+    </div>
+  </div>
+  <div>
+    <div class="panel">
+      <div class="panel-head"><div class="panel-title">Quick test samples</div></div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:8px">
+        <button onclick="fillSample('phish')" class="btn btn-outline" style="justify-content:flex-start;text-align:left;gap:10px">
+          <span class="tag tag-phish">Phishing</span>PayPal account scam
+        </button>
+        <button onclick="fillSample('susp')" class="btn btn-outline" style="justify-content:flex-start;text-align:left;gap:10px">
+          <span class="tag tag-susp">Suspicious</span>Job offer with bank request
+        </button>
+        <button onclick="fillSample('safe')" class="btn btn-outline" style="justify-content:flex-start;text-align:left;gap:10px">
+          <span class="tag tag-safe">Safe</span>Legitimate meeting email
+        </button>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-head"><div class="panel-title">How detection works</div></div>
+      <div class="panel-body" style="font-size:12px;color:var(--c-text2);line-height:1.9">
+        <div>① <strong style="color:var(--c-text)">Text</strong> — urgency, keywords, credential requests (40%)</div>
+        <div>② <strong style="color:var(--c-text)">URLs</strong> — domain spoofing, suspicious TLDs (30%)</div>
+        <div>③ <strong style="color:var(--c-text)">Sender</strong> — domain reputation, impersonation (20%)</div>
+        <div>④ <strong style="color:var(--c-text)">Attachments</strong> — file type and name risk (10%)</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const s={phish:{sender:'account-security@paypa1-support.net',subject:'URGENT: Your PayPal account has been limited',body:'Dear Customer,\n\nWe detected suspicious activity on your PayPal account. Your account has been limited.\n\nVerify now: http://paypa1-support.net/verify?token=a8f3kx29\n\nFailure to act may result in permanent suspension.\n\n— PayPal Security Team',attach:''},
+susp:{sender:'hr@globalopportunities2026.org',subject:'You have been selected for a remote position',body:'Dear Applicant,\n\nWe reviewed your profile and would like to offer you a $3,000/month remote role. To proceed, please provide your bank account details for payroll setup.\n\n— Global Opportunities HR',attach:'offer_letter.pdf'},
+safe:{sender:'john.okafor@gmail.com',subject:'Meeting notes from yesterday\'s sync',body:'Hi team,\n\nPlease find attached the notes from our project meeting. Let me know if anything is missing.\n\nBest regards,\nJohn',attach:'meeting-notes.pdf'}};
+function fillSample(t){const d=s[t];document.querySelector('[name=sender]').value=d.sender;document.querySelector('[name=subject]').value=d.subject;document.querySelector('[name=body]').value=d.body;document.querySelector('[name=attachment_name]').value=d.attach}
+</script>
+{% endblock %}

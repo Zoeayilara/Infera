@@ -1,0 +1,111 @@
+{% extends 'detector/base.html' %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1 style="font-size:20px;font-weight:700;margin-bottom:20px">Settings</h1>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+
+  <div>
+    <!-- Gmail accounts section -->
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head">
+        <div class="panel-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="var(--primary)"><path d="M20 4H4C2.9 4 2 4.9 2 6v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 2l-8 5-8-5h16zm0 12H4V8l8 5 8-5v10z"/></svg>
+          Gmail accounts
+        </div>
+        <a href="/gmail/connect/" class="btn btn-primary btn-sm">+ Connect</a>
+      </div>
+      <div style="padding:0 18px">
+        {% if accounts %}
+        {% for account in accounts %}
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-size:13px;font-weight:500;color:var(--text)">{{ account.email_address }}</div>
+            <div style="font-size:11px;font-family:var(--mono);color:var(--text3);margin-top:2px">
+              {% if account.last_synced %}Last synced {{ account.last_synced|timesince }} ago{% else %}Never synced{% endif %}
+              · {{ account.total_synced }} emails
+            </div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <a href="/gmail/sync/{{ account.pk }}/" class="btn btn-outline btn-sm">Sync</a>
+            <a href="/gmail/disconnect/{{ account.pk }}/" class="btn btn-outline btn-sm"
+               onclick="return confirm('Disconnect this account?')"
+               style="color:var(--c-accent);border-color:rgba(255,68,68,.3)">Remove</a>
+          </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div style="padding:20px 0;text-align:center">
+          <div style="font-size:12px;color:var(--text3);margin-bottom:10px">No Gmail accounts connected yet.</div>
+          <a href="/gmail/connect/" class="btn btn-primary btn-sm">Connect Gmail</a>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Detection thresholds -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-title">Detection sensitivity</div></div>
+      <div class="panel-body">
+        <div style="margin-bottom:20px">
+          <div class="form-label">Phishing threshold</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <input type="range" min="50" max="90" value="55" id="thresh"
+              style="flex:1;accent-color:var(--c-accent)"
+              oninput="document.getElementById('thresh-val').textContent=this.value+'%'">
+            <span id="thresh-val" style="font-family:var(--mono);font-size:13px;color:var(--c-accent);min-width:38px">55%</span>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px;font-family:var(--mono)">emails above this risk score → classified as phishing</div>
+        </div>
+        <div>
+          <div class="form-label">Alert mode</div>
+          <div style="display:flex;gap:8px">
+            <button class="filter-tab active">Real-time</button>
+            <button class="filter-tab">Digest</button>
+            <button class="filter-tab">Silent</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <!-- Active modalities -->
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head"><div class="panel-title">Active detection modalities</div></div>
+      <div class="panel-body">
+        <label style="display:flex;align-items:center;gap:12px;margin-bottom:16px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="checkbox" checked style="accent-color:var(--c-accent)">
+          <div><div style="font-weight:500;color:var(--text)">Text embedding analysis</div><div style="font-size:11px;margin-top:2px">Keywords, urgency patterns, credential requests (40% weight)</div></div>
+        </label>
+        <label style="display:flex;align-items:center;gap:12px;margin-bottom:16px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="checkbox" checked style="accent-color:var(--c-accent)">
+          <div><div style="font-weight:500;color:var(--text)">URL feature extraction</div><div style="font-size:11px;margin-top:2px">Domain analysis, brand impersonation, TLD checks (30% weight)</div></div>
+        </label>
+        <label style="display:flex;align-items:center;gap:12px;margin-bottom:16px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="checkbox" checked style="accent-color:var(--c-accent)">
+          <div><div style="font-weight:500;color:var(--text)">Sender metadata scoring</div><div style="font-size:11px;margin-top:2px">Sender domain reputation and spoofing detection (20% weight)</div></div>
+        </label>
+        <label style="display:flex;align-items:center;gap:12px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="checkbox" checked style="accent-color:var(--c-accent)">
+          <div><div style="font-weight:500;color:var(--text)">Attachment scanning</div><div style="font-size:11px;margin-top:2px">Filename extension and keyword risk analysis (10% weight)</div></div>
+        </label>
+      </div>
+    </div>
+
+    <!-- How to connect info card -->
+    <div class="panel">
+      <div class="panel-head"><div class="panel-title">How Gmail connection works</div></div>
+      <div class="panel-body">
+        <div style="font-size:12px;color:var(--text2);line-height:1.9">
+          <div style="margin-bottom:8px">① Infera connects via <strong style="color:var(--text)">IMAP SSL</strong> to <span style="font-family:var(--mono);font-size:11px;background:var(--bg3);padding:1px 5px;border-radius:4px">imap.gmail.com:993</span></div>
+          <div style="margin-bottom:8px">② Fetches your most recent emails (you choose how many)</div>
+          <div style="margin-bottom:8px">③ Each email is run through the 4-modality ML engine</div>
+          <div style="margin-bottom:8px">④ Results appear instantly in the inbox — colour coded by risk</div>
+          <div>⑤ Re-sync anytime — already-scanned emails are skipped automatically</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

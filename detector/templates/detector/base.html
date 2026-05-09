@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ request.user.profile.theme|default:'light' }}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Infera — {% block title %}Dashboard{% endblock %}</title>
+{% load static %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --c-bg:#f0f4ff;--c-surface:#ffffff;--c-border:#dbe4f3;--c-border2:#c3d0e8;
+  --c-text:#0f1c3a;--c-text2:#4a5a7a;--c-text3:#8a9bb8;
+  --c-danger:#dc2626;--c-danger-s:#fff0f0;--c-danger-b:#fecaca;
+  --c-warn:#92400e;--c-warn-s:#fffbeb;--c-warn-b:#fde68a;
+  --c-ok:#166534;--c-ok-s:#f0fdf4;--c-ok-b:#bbf7d0;
+  --c-info:#2563eb;--c-info-s:#eff6ff;--c-info-b:#bfdbfe;
+  --c-accent:#2563eb;--c-accent-s:#eff6ff;--c-accent-b:#bfdbfe;
+  --shadow:0 1px 3px rgba(30,58,138,.07),0 1px 2px rgba(30,58,138,.04);
+  --shadow-md:0 4px 12px rgba(30,58,138,.12),0 2px 4px rgba(30,58,138,.06);
+  --radius:10px;--font:'Inter',system-ui,sans-serif;--font-disp:'Fraunces',Georgia,serif;
+}
+[data-theme="dark"] {
+  --c-bg:#141412;--c-surface:#1c1b18;--c-border:#2a2925;--c-border2:#38362f;
+  --c-text:#f0ede8;--c-text2:#9c9a93;--c-text3:#5c5a55;
+  --c-danger:#f87171;--c-danger-s:rgba(248,113,113,.08);--c-danger-b:rgba(248,113,113,.2);
+  --c-warn:#fbbf24;--c-warn-s:rgba(251,191,36,.08);--c-warn-b:rgba(251,191,36,.2);
+  --c-ok:#4ade80;--c-ok-s:rgba(74,222,128,.08);--c-ok-b:rgba(74,222,128,.2);
+  --c-info:#60a5fa;--c-info-s:rgba(96,165,250,.08);--c-info-b:rgba(96,165,250,.2);
+  --c-accent:#60a5fa;--c-accent-s:rgba(96,165,250,.08);--c-accent-b:rgba(96,165,250,.2);
+  --shadow:0 1px 3px rgba(0,0,0,.3);--shadow-md:0 4px 16px rgba(0,0,0,.4);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{height:100%}
+body{min-height:100%;background:var(--c-bg);color:var(--c-text);font-family:var(--font);
+  font-size:14px;line-height:1.6;transition:background .2s,color .2s}
+a{color:inherit;text-decoration:none}
+button,input,select,textarea{font-family:var(--font)}
+img{max-width:100%}
+
+/* ── Layout ── */
+.app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:56px 1fr;min-height:100vh}
+
+/* ── Topbar ── */
+.topbar{grid-column:1/-1;background:var(--c-surface);border-bottom:1px solid var(--c-border);
+  padding:0 20px;display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:100;box-shadow:var(--shadow)}
+.logo{display:flex;align-items:center;gap:9px}
+.logo-mark{width:30px;height:30px;background:linear-gradient(135deg,#2563eb,#06b6d4);
+  border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-mark svg{width:16px;height:16px;fill:white}
+.logo-name{font-family:var(--font-disp);font-size:17px;font-weight:600;color:var(--c-text);letter-spacing:-.3px}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.theme-btn{background:none;border:1px solid var(--c-border);border-radius:8px;width:34px;height:34px;
+  cursor:pointer;color:var(--c-text2);display:flex;align-items:center;justify-content:center;transition:all .15s}
+.theme-btn:hover{background:var(--c-border);color:var(--c-text)}
+.notif-btn{position:relative;background:none;border:1px solid var(--c-border);border-radius:8px;
+  width:34px;height:34px;cursor:pointer;color:var(--c-text2);display:flex;align-items:center;
+  justify-content:center;transition:all .15s}
+.notif-btn:hover{background:var(--c-border)}
+.notif-dot{position:absolute;top:7px;right:7px;width:6px;height:6px;background:var(--c-accent);
+  border-radius:50%;border:1.5px solid var(--c-surface)}
+.avatar-btn{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;background:none;
+  border:1px solid var(--c-border);border-radius:100px;cursor:pointer;transition:all .15s}
+.avatar-btn:hover{background:var(--c-border)}
+.avatar-circle{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#06b6d4);
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;
+  color:white;overflow:hidden;flex-shrink:0}
+.avatar-circle img{width:100%;height:100%;object-fit:cover}
+.avatar-name{font-size:12px;font-weight:500;color:var(--c-text);max-width:90px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Hamburger (hidden on desktop) ── */
+.hamburger{display:none;flex-direction:column;justify-content:center;align-items:center;
+  gap:5px;width:36px;height:36px;background:none;border:1px solid var(--c-border);
+  border-radius:8px;cursor:pointer;padding:0;flex-shrink:0}
+.hamburger span{display:block;width:16px;height:2px;background:var(--c-text);
+  border-radius:2px;transition:.25s}
+.hamburger.open span:nth-child(1){transform:rotate(45deg) translate(5px,5px)}
+.hamburger.open span:nth-child(2){opacity:0}
+.hamburger.open span:nth-child(3){transform:rotate(-45deg) translate(5px,-5px)}
+
+/* ── Dropdown ── */
+.dropdown{position:relative}
+.dropdown-menu{position:absolute;top:calc(100% + 6px);right:0;background:var(--c-surface);
+  border:1px solid var(--c-border);border-radius:var(--radius);box-shadow:var(--shadow-md);
+  min-width:180px;padding:6px;display:none;z-index:200}
+.dropdown.open .dropdown-menu{display:block}
+.dropdown-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;
+  font-size:13px;color:var(--c-text2);cursor:pointer;transition:all .1s}
+.dropdown-item:hover{background:var(--c-bg);color:var(--c-text)}
+.dropdown-item svg{width:14px;height:14px;fill:currentColor;flex-shrink:0}
+.dropdown-divider{height:1px;background:var(--c-border);margin:5px 0}
+.dropdown-item.danger{color:var(--c-danger)}
+
+/* ── Sidebar ── */
+.sidebar{background:var(--c-surface);border-right:1px solid var(--c-border);
+  padding:16px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:98;top:56px}
+.sidebar-overlay.open{display:block}
+.nav-section{font-size:10px;font-weight:600;color:var(--c-text3);padding:12px 10px 4px;
+  text-transform:uppercase;letter-spacing:.8px}
+.nav-item{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:8px;
+  color:var(--c-text2);font-size:13px;font-weight:500;transition:all .12s;border:1px solid transparent}
+.nav-item:hover{background:var(--c-bg);color:var(--c-text)}
+.nav-item.active{background:var(--c-accent-s);color:var(--c-accent);border-color:var(--c-accent-b)}
+.nav-item svg{width:15px;height:15px;fill:currentColor;flex-shrink:0}
+.nav-badge{margin-left:auto;background:var(--c-danger);color:white;font-size:10px;font-weight:600;
+  padding:1px 6px;border-radius:20px;min-width:18px;text-align:center}
+.nav-divider{height:1px;background:var(--c-border);margin:6px 2px}
+
+/* ── Main ── */
+.main{padding:28px;overflow-y:auto;background:var(--c-bg)}
+
+/* ── Stat cards ── */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
+.stat-card{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);
+  padding:18px 20px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .15s,transform .15s;
+  text-decoration:none;display:block}
+.stat-card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.stat-label{font-size:11px;font-weight:600;color:var(--c-text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.stat-value{font-family:var(--font-disp);font-size:32px;font-weight:600;line-height:1;margin-bottom:4px;color:var(--c-text)}
+.stat-card.danger .stat-value{color:var(--c-danger)}
+.stat-card.warn   .stat-value{color:var(--c-warn)}
+.stat-card.ok     .stat-value{color:var(--c-ok)}
+.stat-card.info   .stat-value{color:var(--c-info)}
+.stat-sub{font-size:12px;color:var(--c-text3)}
+.stat-sub strong{color:var(--c-text2)}
+
+/* ── Panel ── */
+.panel{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);
+  margin-bottom:20px;box-shadow:var(--shadow);overflow:hidden}
+.panel-head{padding:14px 20px;border-bottom:1px solid var(--c-border);display:flex;
+  align-items:center;justify-content:space-between}
+.panel-title{font-size:13px;font-weight:600;color:var(--c-text);display:flex;align-items:center;gap:7px}
+.panel-title svg{width:14px;height:14px;fill:currentColor;color:var(--c-text3)}
+.panel-body{padding:20px}
+
+/* ── Table ── */
+.etable{width:100%;border-collapse:collapse}
+.etable th{padding:10px 18px;text-align:left;font-size:11px;font-weight:600;color:var(--c-text3);
+  text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--c-border);background:var(--c-bg)}
+.etable td{padding:13px 18px;border-bottom:1px solid var(--c-border);font-size:13px;
+  color:var(--c-text2);vertical-align:middle}
+.etable tbody tr{cursor:pointer;transition:background .1s}
+.etable tbody tr:hover{background:var(--c-bg)}
+.etable tbody tr:last-child td{border-bottom:none}
+
+/* ── Tags ── */
+.tag{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;letter-spacing:.3px}
+.tag-phish{background:var(--c-danger-s);color:var(--c-danger);border:1px solid var(--c-danger-b)}
+.tag-susp{background:var(--c-warn-s);color:var(--c-warn);border:1px solid var(--c-warn-b)}
+.tag-safe{background:var(--c-ok-s);color:var(--c-ok);border:1px solid var(--c-ok-b)}
+.tag-pend{background:var(--c-info-s);color:var(--c-info);border:1px solid var(--c-info-b)}
+
+/* ── Risk bar ── */
+.risk-wrap{display:flex;align-items:center;gap:8px;min-width:100px}
+.risk-bar{flex:1;height:4px;background:var(--c-border);border-radius:2px}
+.risk-fill{height:100%;border-radius:2px}
+.risk-num{font-size:12px;font-weight:600;min-width:32px;font-variant-numeric:tabular-nums}
+
+/* ── Buttons ── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;
+  font-size:13px;font-weight:500;cursor:pointer;transition:all .15s;border:none;line-height:1;text-decoration:none}
+.btn-primary{background:var(--c-accent);color:white}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn-outline{background:none;border:1px solid var(--c-border2);color:var(--c-text2)}
+.btn-outline:hover{background:var(--c-bg);color:var(--c-text);border-color:var(--c-text3)}
+.btn-ghost{background:none;border:none;color:var(--c-text2);padding:6px 10px}
+.btn-ghost:hover{background:var(--c-bg);color:var(--c-text)}
+.btn-sm{padding:5px 10px;font-size:12px;border-radius:6px}
+.btn-danger{background:var(--c-danger-s);color:var(--c-danger);border:1px solid var(--c-danger-b)}
+
+/* ── Forms ── */
+.form-group{margin-bottom:16px}
+.form-label{display:block;font-size:12px;font-weight:600;color:var(--c-text2);margin-bottom:6px;
+  text-transform:uppercase;letter-spacing:.4px}
+.form-input,.form-textarea,.form-select{width:100%;background:var(--c-bg);border:1px solid var(--c-border2);
+  border-radius:8px;padding:9px 13px;color:var(--c-text);font-size:13px;outline:none;
+  transition:border-color .15s,box-shadow .15s}
+.form-input:focus,.form-textarea:focus,.form-select:focus{border-color:var(--c-accent);box-shadow:0 0 0 3px var(--c-accent-s)}
+.form-input::placeholder,.form-textarea::placeholder{color:var(--c-text3)}
+.form-textarea{resize:vertical;min-height:120px;line-height:1.6}
+.form-hint{font-size:11px;color:var(--c-text3);margin-top:4px}
+
+/* ── Alerts / Toasts ── */
+.alert{padding:11px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;border:1px solid;
+  display:flex;gap:8px;align-items:flex-start}
+.alert-danger{background:var(--c-danger-s);color:var(--c-danger);border-color:var(--c-danger-b)}
+.alert-warning{background:var(--c-warn-s);color:var(--c-warn);border-color:var(--c-warn-b)}
+.alert-success{background:var(--c-ok-s);color:var(--c-ok);border-color:var(--c-ok-b)}
+.alert-info{background:var(--c-info-s);color:var(--c-info);border-color:var(--c-info-b)}
+.toast-stack{position:fixed;bottom:20px;right:20px;z-index:999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);
+  padding:13px 16px;min-width:280px;max-width:340px;box-shadow:var(--shadow-md);
+  display:flex;gap:11px;pointer-events:all;animation:toastIn .2s ease}
+@keyframes toastIn{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.toast-icon{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.toast-icon.danger{background:var(--c-danger-s);color:var(--c-danger)}
+.toast-icon.warning{background:var(--c-warn-s);color:var(--c-warn)}
+.toast-icon svg{width:14px;height:14px;fill:currentColor}
+.toast-body{flex:1}
+.toast-title{font-size:13px;font-weight:600;color:var(--c-text);margin-bottom:2px}
+.toast-msg{font-size:12px;color:var(--c-text2)}
+.toast-close{color:var(--c-text3);cursor:pointer;font-size:16px;line-height:1;align-self:center}
+
+/* ── Toolbar ── */
+.toolbar{display:flex;gap:8px;align-items:center;padding:12px 18px;
+  border-bottom:1px solid var(--c-border);background:var(--c-bg)}
+.search-box{flex:1;background:var(--c-surface);border:1px solid var(--c-border2);border-radius:8px;
+  padding:7px 12px;color:var(--c-text);font-size:13px;outline:none;transition:border-color .15s}
+.search-box:focus{border-color:var(--c-accent)}
+.search-box::placeholder{color:var(--c-text3)}
+.filter-tab{background:none;border:1px solid var(--c-border);border-radius:7px;padding:6px 13px;
+  font-size:12px;font-weight:500;color:var(--c-text3);cursor:pointer;transition:all .12s;white-space:nowrap}
+.filter-tab:hover{border-color:var(--c-text3);color:var(--c-text)}
+.filter-tab.active.danger{background:var(--c-danger-s);color:var(--c-danger);border-color:var(--c-danger-b)}
+.filter-tab.active.warn{background:var(--c-warn-s);color:var(--c-warn);border-color:var(--c-warn-b)}
+.filter-tab.active.ok{background:var(--c-ok-s);color:var(--c-ok);border-color:var(--c-ok-b)}
+.filter-tab.active{background:var(--c-bg);color:var(--c-text);border-color:var(--c-border2)}
+
+/* ── Helpers ── */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.empty-state{padding:60px 20px;text-align:center}
+.empty-state svg{width:40px;height:40px;fill:var(--c-border2);margin-bottom:14px}
+.empty-state h3{font-size:15px;font-weight:600;margin-bottom:6px}
+.empty-state p{font-size:13px;color:var(--c-text2);margin-bottom:18px}
+.divider{height:1px;background:var(--c-border);margin:4px 0}
+.page-title{font-family:var(--font-disp);font-size:22px;font-weight:600;letter-spacing:-.3px;margin-bottom:20px}
+.mono{font-family:'SF Mono','Fira Code',monospace;font-size:.9em}
+
+/* ══════════════════════════════════════
+   RESPONSIVE — MOBILE (max 768px)
+══════════════════════════════════════ */
+@media(max-width:768px){
+  /* Switch to single column, topbar only in row 1 */
+  .app{grid-template-columns:1fr;grid-template-rows:56px 1fr}
+
+  /* Show hamburger, hide avatar name */
+  .hamburger{display:flex}
+  .avatar-name{display:none}
+
+  /* Slide-in sidebar */
+  .sidebar{position:fixed;top:56px;left:0;bottom:0;width:260px;
+    transform:translateX(-100%);z-index:99;transition:transform .25s ease;
+    box-shadow:4px 0 20px rgba(0,0,0,.15)}
+  .sidebar.open{transform:translateX(0)}
+
+  /* Main takes full width in row 2 */
+  .main{grid-column:1;grid-row:2;padding:16px}
+
+  /* Stats 2 columns */
+  .stats-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .stat-card{padding:14px}
+  .stat-value{font-size:24px}
+
+  /* Grids stack */
+  .grid-2,.grid-3{grid-template-columns:1fr}
+  .panel-head{flex-direction:column;gap:10px;align-items:flex-start}
+
+  /* Toolbar wraps */
+  .toolbar{flex-wrap:wrap}
+  .search-box{width:100%;order:-1}
+
+  /* Tables scroll */
+  .panel{overflow-x:auto}
+  .etable{min-width:500px}
+
+  /* Toast smaller */
+  .toast-stack{right:10px;bottom:10px}
+  .toast{min-width:auto;max-width:calc(100vw - 20px)}
+
+  /* Notif panel full width */
+  #notif-panel{min-width:calc(100vw - 40px) !important;max-width:calc(100vw - 40px) !important;right:-10px !important}
+}
+
+@media(max-width:480px){
+  .stats-grid{grid-template-columns:1fr}
+  .topbar{padding:0 12px}
+  .logo-name{display:none}
+  .filter-tab{padding:5px 8px;font-size:11px}
+}
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="hamburger" id="hamburger" onclick="toggleSidebar()" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+      <a href="/" class="logo">
+        <div class="logo-mark">
+          <svg viewBox="0 0 16 16"><path d="M8 1L1 4v4c0 4 3 7 7 8 4-1 7-4 7-8V4L8 1zm0 2.2 4.5 2v3.5c0 2.6-2 4.6-4.5 5.3C5.5 12.3 3.5 10.3 3.5 7.7V5.2L8 3.2z"/><circle cx="8" cy="9" r="1.4"/><line x1="8" y1="6.2" x2="8" y2="8" stroke="white" stroke-width="1.2"/></svg>
+        </div>
+        <span class="logo-name">Infera</span>
+      </a>
+    </div>
+
+    <div class="topbar-right">
+      <button class="theme-btn" id="theme-btn" title="Toggle theme" onclick="toggleTheme()">
+        <svg id="theme-icon-sun" width="15" height="15" viewBox="0 0 16 16" fill="currentColor" {% if request.user.profile.theme == 'dark' %}style="display:none"{% endif %}>
+          <circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        </svg>
+        <svg id="theme-icon-moon" width="15" height="15" viewBox="0 0 16 16" fill="currentColor" {% if request.user.profile.theme != 'dark' %}style="display:none"{% endif %}>
+          <path d="M6 2a6 6 0 100 12A6 6 0 006 2zm0 0a6 6 0 110 12"/>
+        </svg>
+      </button>
+
+      <div class="dropdown" id="notif-dropdown">
+        <button class="notif-btn" id="notif-btn" title="Alerts" onclick="toggleNotifPanel()">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a5 5 0 00-5 5v2.5L1.5 10v1h13v-1L13 8.5V6a5 5 0 00-5-5zm0 14a2 2 0 002-2H6a2 2 0 002 2z"/></svg>
+          <div class="notif-dot" id="notif-dot" style="display:none"></div>
+          <span id="notif-count-badge" style="display:none;position:absolute;top:4px;right:4px;
+            background:var(--c-danger);color:white;font-size:9px;font-weight:700;
+            width:14px;height:14px;border-radius:50%;align-items:center;justify-content:center;line-height:1"></span>
+        </button>
+        <div class="dropdown-menu" id="notif-panel" style="min-width:320px;max-width:360px;right:0">
+          <div style="padding:10px 12px 8px;border-bottom:1px solid var(--c-border);display:flex;align-items:center;justify-content:space-between">
+            <div style="font-size:13px;font-weight:600;color:var(--c-text)">Alerts</div>
+            <span id="notif-panel-count" style="font-size:11px;color:var(--c-text3)">Loading…</span>
+          </div>
+          <div id="notif-list" style="max-height:320px;overflow-y:auto">
+            <div style="padding:24px;text-align:center;font-size:13px;color:var(--c-text3)">Loading…</div>
+          </div>
+          <div style="padding:8px 12px;border-top:1px solid var(--c-border)">
+            <a href="/inbox/?status=phishing" class="btn btn-outline btn-sm"
+              style="width:100%;justify-content:center"
+              onclick="document.getElementById('notif-dropdown').classList.remove('open')">
+              View all threats →
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {% if request.user.is_authenticated %}
+      <div class="dropdown" id="user-dropdown">
+        <button class="avatar-btn" onclick="document.getElementById('user-dropdown').classList.toggle('open')">
+          <div class="avatar-circle">
+            {% if request.user.profile.avatar %}
+            <img src="{{ request.user.profile.avatar.url }}" alt="avatar">
+            {% else %}
+            {{ request.user.profile.initials }}
+            {% endif %}
+          </div>
+          <span class="avatar-name">{{ request.user.first_name|default:request.user.username }}</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" style="color:var(--c-text3)"><path d="M2 4l4 4 4-4"/></svg>
+        </button>
+        <div class="dropdown-menu">
+          <div style="padding:8px 10px 6px;border-bottom:1px solid var(--c-border);margin-bottom:4px">
+            <div style="font-size:13px;font-weight:600;color:var(--c-text)">{{ request.user.get_full_name|default:request.user.username }}</div>
+            <div style="font-size:11px;color:var(--c-text3)">{{ request.user.email }}</div>
+          </div>
+          <a href="/auth/profile/" class="dropdown-item">
+            <svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 14c0-4 3-6 7-6s7 2 7 6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            My Profile
+          </a>
+          <a href="/settings/" class="dropdown-item">
+            <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>
+            Settings
+          </a>
+          <div class="divider"></div>
+          <a href="/auth/logout/" class="dropdown-item danger">
+            <svg viewBox="0 0 16 16"><path d="M6 2H2v12h4M11 11l3-3-3-3M14 8H6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+            Sign out
+          </a>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </header>
+
+  <!-- Sidebar overlay -->
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="nav-section">Monitor</div>
+    <a href="/dashboard/" class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
+      Dashboard
+    </a>
+    <a href="/inbox/" class="nav-item {% if request.resolver_match.url_name == 'inbox' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><path d="M1 3h14v10H1V3zm1 1v1.5l6 4 6-4V4H2zm0 3v5h12V7L8 11 2 7z"/></svg>
+      Inbox
+      <span class="nav-badge" id="nav-phishing-count">—</span>
+    </a>
+    <a href="/scan/" class="nav-item {% if request.resolver_match.url_name == 'scan_email' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><path d="M14 9.5A6.5 6.5 0 111 9.5 6.5 6.5 0 0114 9.5z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10 9.5H7m1.5 1.5v-3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M12.5 12.5L15 15" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+      Scan Email
+    </a>
+    <div class="nav-divider"></div>
+    <div class="nav-section">Gmail</div>
+    <a href="/gmail/connect/" class="nav-item {% if request.resolver_match.url_name == 'gmail_connect' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><path d="M1 3h14v10H1V3zm1 1v1.5l6 4 6-4V4H2zm0 3v5h12V7L8 11 2 7z" fill="currentColor" opacity=".5"/><circle cx="13" cy="4" r="3" fill="var(--c-danger)"/></svg>
+      Connect Gmail
+    </a>
+    <a href="/gmail/accounts/" class="nav-item {% if request.resolver_match.url_name == 'gmail_accounts' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>
+      My Accounts
+    </a>
+    <div class="nav-divider"></div>
+    <div class="nav-section">Insights</div>
+    <a href="/analytics/" class="nav-item {% if request.resolver_match.url_name == 'analytics' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6" y="5" width="3" height="10" rx="1"/><rect x="11" y="1" width="3" height="14" rx="1"/></svg>
+      Analytics
+    </a>
+    <div class="nav-divider"></div>
+    <div class="nav-section">Account</div>
+    <a href="/auth/profile/" class="nav-item {% if request.resolver_match.url_name == 'profile' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 14c0-4 3-6 7-6s7 2 7 6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>
+      Profile
+    </a>
+    <a href="/settings/" class="nav-item {% if request.resolver_match.url_name == 'settings' %}active{% endif %}" onclick="closeSidebarOnMobile()">
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>
+      Settings
+    </a>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    {% if messages %}
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}" style="margin-bottom:16px">
+      {{ message }}
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+
+<div class="toast-stack" id="toast-stack"></div>
+
+<script>
+// ── Sidebar toggle ────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const sidebar  = document.getElementById('sidebar');
+  const overlay  = document.getElementById('sidebar-overlay');
+  const hamburger = document.getElementById('hamburger');
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('open');
+  hamburger.classList.toggle('open');
+  document.body.style.overflow = sidebar.classList.contains('open') ? 'hidden' : '';
+}
+function closeSidebarOnMobile() {
+  if (window.innerWidth <= 768) {
+    const sidebar   = document.getElementById('sidebar');
+    const overlay   = document.getElementById('sidebar-overlay');
+    const hamburger = document.getElementById('hamburger');
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+    hamburger.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+}
+window.addEventListener('resize', function() {
+  if (window.innerWidth > 768) {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebar-overlay').classList.remove('open');
+    document.getElementById('hamburger').classList.remove('open');
+    document.body.style.overflow = '';
+  }
+});
+
+// ── Close dropdowns on outside click ─────────────────────────────────────
+document.addEventListener('click', function(e) {
+  const ud = document.getElementById('user-dropdown');
+  if (ud && !ud.contains(e.target)) ud.classList.remove('open');
+  const nd = document.getElementById('notif-dropdown');
+  if (nd && !nd.contains(e.target)) nd.classList.remove('open');
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────
+function showToast(title, msg, level='danger') {
+  const stack = document.getElementById('toast-stack');
+  const t = document.createElement('div');
+  t.className = 'toast';
+  const icon = level === 'warning'
+    ? `<svg viewBox="0 0 16 16"><path d="M8 1l7 13H1L8 1zm0 4v4m0 2v1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`
+    : `<svg viewBox="0 0 16 16"><path d="M8 1L1 5v5c0 4 3 6 7 6s7-2 7-6V5L8 1z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 8.5l2 2 3-3" stroke="currentColor" stroke-width="1.3" fill="none"/></svg>`;
+  t.innerHTML = `
+    <div class="toast-icon ${level}">${icon}</div>
+    <div class="toast-body">
+      <div class="toast-title">${title}</div>
+      <div class="toast-msg">${msg}</div>
+    </div>
+    <div class="toast-close" onclick="this.parentElement.remove()">×</div>`;
+  stack.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+// ── Theme toggle ──────────────────────────────────────────────────────────
+function toggleTheme() {
+  fetch('/auth/theme/', {method:'POST', headers:{'X-CSRFToken': getCookie('csrftoken')}})
+    .then(r => r.json()).then(d => {
+      document.documentElement.dataset.theme = d.theme;
+      document.getElementById('theme-icon-sun').style.display  = d.theme === 'dark' ? 'none' : '';
+      document.getElementById('theme-icon-moon').style.display = d.theme === 'dark' ? '' : 'none';
+    });
+}
+function getCookie(name) {
+  return document.cookie.split(';').map(c => c.trim())
+    .find(c => c.startsWith(name + '='))?.split('=')[1] || '';
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────
+let _notifLoaded = false;
+function toggleNotifPanel() {
+  const dd = document.getElementById('notif-dropdown');
+  const isOpen = dd.classList.contains('open');
+  if (!isOpen) {
+    dd.classList.add('open');
+    loadNotifications();
+    fetch('/api/notifications/seen/', {method:'POST', headers:{'X-CSRFToken': getCookie('csrftoken')}});
+  } else {
+    dd.classList.remove('open');
+  }
+}
+function loadNotifications() {
+  fetch('/api/notifications/')
+    .then(r => r.json())
+    .then(d => {
+      const list  = document.getElementById('notif-list');
+      const count = document.getElementById('notif-panel-count');
+      if (count) count.textContent = d.total + ' total alert' + (d.total !== 1 ? 's' : '');
+      if (!d.notifications || d.notifications.length === 0) {
+        list.innerHTML = `<div style="padding:32px 16px;text-align:center;font-size:13px;color:var(--c-text3)">
+          <div style="font-size:28px;margin-bottom:8px">✓</div>
+          No threats detected yet.<br>Your inbox looks clean.
+        </div>`;
+        return;
+      }
+      list.innerHTML = d.notifications.map(n => {
+        const color = n.level === 'danger' ? 'var(--c-danger)' : 'var(--c-warn)';
+        return `<a href="/email/${n.email_id}/"
+          onclick="document.getElementById('notif-dropdown').classList.remove('open')"
+          style="display:flex;gap:10px;padding:10px 12px;border-bottom:1px solid var(--c-border);
+            align-items:flex-start;transition:background .1s;text-decoration:none"
+          onmouseover="this.style.background='var(--c-bg)'"
+          onmouseout="this.style.background=''">
+          <div style="width:8px;height:8px;border-radius:50%;background:${color};margin-top:5px;flex-shrink:0"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;color:var(--c-text);line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${n.message}</div>
+            <div style="font-size:11px;color:var(--c-text3);margin-top:2px">${n.time}</div>
+          </div>
+        </a>`;
+      }).join('');
+    })
+    .catch(() => {
+      document.getElementById('notif-list').innerHTML =
+        '<div style="padding:20px;text-align:center;font-size:12px;color:var(--c-text3)">Could not load alerts.</div>';
+    });
+}
+function checkNotifCount() {
+  fetch('/api/notifications/')
+    .then(r => r.json())
+    .then(d => {
+      const dot      = document.getElementById('notif-dot');
+      const badge    = document.getElementById('notif-count-badge');
+      const navBadge = document.getElementById('nav-phishing-count');
+      if (d.count > 0) {
+        if (dot)   dot.style.display = 'block';
+        if (badge) { badge.style.display = 'flex'; badge.textContent = d.count > 9 ? '9+' : d.count; }
+        if (!_notifLoaded && d.notifications && d.notifications.length > 0) {
+          const latest = d.notifications[0];
+          showToast(latest.level === 'danger' ? 'Phishing detected' : 'Suspicious email', latest.message, latest.level);
+        }
+      } else {
+        if (dot)   dot.style.display = 'none';
+        if (badge) badge.style.display = 'none';
+      }
+      if (navBadge) navBadge.textContent = d.total || '0';
+      _notifLoaded = true;
+    })
+    .catch(() => {});
+}
+try { checkNotifCount(); } catch(e) {}
+setInterval(function(){ try { checkNotifCount(); } catch(e) {} }, 30000);
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,103 @@
+{% extends 'detector/base.html' %}
+{% block title %}{{ email.subject|truncatechars:40 }}{% endblock %}
+{% block content %}
+<a href="/inbox/" class="btn btn-outline btn-sm" style="margin-bottom:18px">← Back to inbox</a>
+
+<div style="display:grid;grid-template-columns:1fr 300px;gap:18px">
+  <div>
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head">
+        <div class="panel-title">Email details</div>
+        {% if email.status == 'phishing' %}<span class="tag tag-phish">Phishing</span>
+        {% elif email.status == 'suspicious' %}<span class="tag tag-susp">Suspicious</span>
+        {% else %}<span class="tag tag-safe">Safe</span>{% endif %}
+      </div>
+      <div class="panel-body">
+        <div style="margin-bottom:14px"><div style="font-size:11px;font-weight:600;color:var(--c-text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">From</div>
+        <div class="mono" style="font-size:13px">{{ email.sender }}</div></div>
+        <div style="margin-bottom:14px"><div style="font-size:11px;font-weight:600;color:var(--c-text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Subject</div>
+        <div style="font-size:16px;font-weight:600;color:var(--c-text)">{{ email.subject }}</div></div>
+        <div style="margin-bottom:16px"><div style="font-size:11px;font-weight:600;color:var(--c-text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Received</div>
+        <div style="font-size:13px;color:var(--c-text2)">{{ email.received_at|date:"F j, Y, H:i" }}</div></div>
+        <div><div style="font-size:11px;font-weight:600;color:var(--c-text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Body</div>
+        <div style="background:var(--c-bg);border:1px solid var(--c-border);border-radius:8px;padding:16px;font-size:13px;line-height:1.8;color:var(--c-text2);max-height:240px;overflow-y:auto;white-space:pre-wrap">{{ email.body }}</div></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head"><div class="panel-title">Extracted URLs ({{ email.extracted_urls|length }})</div></div>
+      <div class="panel-body">
+        {% if email.extracted_urls %}{% for url in email.extracted_urls %}
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--c-bg);border:1px solid var(--c-border);border-radius:7px;margin-bottom:6px">
+          <span class="tag tag-phish" style="flex-shrink:0;font-size:10px">RISKY</span>
+          <span class="mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--c-text2)">{{ url }}</span>
+        </div>{% endfor %}
+        {% else %}<div style="font-size:13px;color:var(--c-text3)">No URLs found in this email.</div>{% endif %}
+      </div>
+    </div>
+    {% if email.has_attachment %}
+    <div class="panel">
+      <div class="panel-head"><div class="panel-title">Attachment</div></div>
+      <div class="panel-body">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--c-bg);border:1px solid var(--c-border);border-radius:7px">
+          <span class="tag tag-susp" style="flex-shrink:0;font-size:10px">REVIEW</span>
+          <span class="mono" style="font-size:12px;color:var(--c-text2)">{{ email.attachment_name }}</span>
+        </div>
+      </div>
+    </div>{% endif %}
+  </div>
+
+  <div>
+    <div class="panel" style="margin-bottom:16px;text-align:center">
+      <div class="panel-body">
+        <div style="font-family:var(--font-disp);font-size:56px;font-weight:700;line-height:1;
+          color:{% if email.status == 'phishing' %}var(--c-danger){% elif email.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}">{{ email.risk_percent }}%</div>
+        <div style="font-size:12px;color:var(--c-text3);margin:6px 0 14px">phishing probability</div>
+        {% if email.status == 'phishing' %}<span class="tag tag-phish">Phishing</span>
+        {% elif email.status == 'suspicious' %}<span class="tag tag-susp">Suspicious</span>
+        {% else %}<span class="tag tag-safe">Safe</span>{% endif %}
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-head"><div class="panel-title">AI modality scores</div></div>
+      <div style="padding:0 16px">
+        {% for label,score,pct in ai_rows %}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--c-border);font-size:12px">
+          <span style="color:var(--c-text2)">{{ label }}</span>
+          <span style="font-weight:600;padding:3px 8px;border-radius:20px;font-size:11px;
+            {% if pct > 60 %}background:var(--c-danger-s);color:var(--c-danger){% elif pct > 30 %}background:var(--c-warn-s);color:var(--c-warn){% else %}background:var(--c-ok-s);color:var(--c-ok){% endif %}">
+            {{ pct }}%
+          </span>
+        </div>
+        {% empty %}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--c-border);font-size:12px"><span style="color:var(--c-text2)">Text embedding</span><span style="font-weight:600;padding:3px 8px;border-radius:20px;font-size:11px;{% if email.text_score_pct > 60 %}background:var(--c-danger-s);color:var(--c-danger){% elif email.text_score_pct > 30 %}background:var(--c-warn-s);color:var(--c-warn){% else %}background:var(--c-ok-s);color:var(--c-ok){% endif %}">{{ email.text_score_pct }}%</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--c-border);font-size:12px"><span style="color:var(--c-text2)">URL features</span><span style="font-weight:600;padding:3px 8px;border-radius:20px;font-size:11px;{% if email.url_score_pct > 60 %}background:var(--c-danger-s);color:var(--c-danger){% elif email.url_score_pct > 30 %}background:var(--c-warn-s);color:var(--c-warn){% else %}background:var(--c-ok-s);color:var(--c-ok){% endif %}">{{ email.url_score_pct }}%</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--c-border);font-size:12px"><span style="color:var(--c-text2)">Sender metadata</span><span style="font-weight:600;padding:3px 8px;border-radius:20px;font-size:11px;{% if email.metadata_score_pct > 60 %}background:var(--c-danger-s);color:var(--c-danger){% elif email.metadata_score_pct > 30 %}background:var(--c-warn-s);color:var(--c-warn){% else %}background:var(--c-ok-s);color:var(--c-ok){% endif %}">{{ email.metadata_score_pct }}%</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;font-size:12px"><span style="color:var(--c-text2)">Attachment scan</span><span style="font-weight:600;padding:3px 8px;border-radius:20px;font-size:11px;{% if email.attachment_score_pct > 60 %}background:var(--c-danger-s);color:var(--c-danger){% elif email.attachment_score_pct > 30 %}background:var(--c-warn-s);color:var(--c-warn){% else %}background:var(--c-ok-s);color:var(--c-ok){% endif %}">{{ email.attachment_score_pct }}%</span></div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><div class="panel-title">Why flagged</div></div>
+      <div class="panel-body">
+        <div style="font-size:12px;color:var(--c-text2);line-height:1.8;margin-bottom:14px">{{ email.why_flagged|default:"No suspicious indicators detected." }}</div>
+        <div style="background:{% if email.status == 'phishing' %}var(--c-danger-s){% elif email.status == 'suspicious' %}var(--c-warn-s){% else %}var(--c-ok-s){% endif %};
+          border:1px solid {% if email.status == 'phishing' %}var(--c-danger-b){% elif email.status == 'suspicious' %}var(--c-warn-b){% else %}var(--c-ok-b){% endif %};
+          border-radius:9px;padding:13px;display:flex;gap:10px;align-items:center">
+          <div style="width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+            background:{% if email.status == 'phishing' %}var(--c-danger){% elif email.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="white"><path d="M8 1L1 5v5c0 4 3 6 7 6s7-2 7-6V5L8 1z"/></svg>
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:600;color:{% if email.status == 'phishing' %}var(--c-danger){% elif email.status == 'suspicious' %}var(--c-warn){% else %}var(--c-ok){% endif %}">
+              Verdict: {{ email.status|title }}
+            </div>
+            <div style="font-size:11px;color:var(--c-text3)" class="mono">Multi-modal AI engine</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
