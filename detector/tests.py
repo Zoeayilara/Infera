@@ -15,16 +15,22 @@ Run: python manage.py test detector
 import email
 import inspect
 import re
+from io import StringIO
+from unittest import mock
 
-from django.test import SimpleTestCase
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase
 
 from ml.train_model import extract_hand_crafted_features as training_features
 
 from .imap_connector import (
+    GmailIMAPConnector,
     extract_body_and_attachments,
     extract_urls_from_html,
     extract_urls_from_text,
+    normalize_message_id,
 )
+from .models import Email, GmailAccount, ScanLog
 from .ml_engine import (
     _feature_text,
     classify_email,
@@ -611,3 +617,537 @@ class FeatureParityTests(SimpleTestCase):
                                      'a@b.com', [], attachment),
                     base,
                 )
+
+
+# ── Backfill of emails synced before the URL fix ─────────────────────────────
+
+BACKFILL_FIXTURE = b"""From: DHL <no-reply@dhl-delivery.top>
+Subject: Package on hold
+Message-ID: <abc123@dhl-delivery.top>
+Date: Mon, 20 Jul 2026 09:15:00 +0100
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="B"
+
+--B
+Content-Type: text/plain; charset="utf-8"
+
+Please enable HTML to view this message.
+--B
+Content-Type: text/html; charset="utf-8"
+
+<html><body><p>Dear User, your package is on hold. Confirm now to release it:
+<a href="http://dhl-redelivery.click/pay">Update now</a></p></body></html>
+--B--
+"""
+
+
+class FakeConnector:
+    """
+    Stands in for GmailIMAPConnector during backfill tests.
+
+    Serves the fixture keyed by Message-ID, in the shape the real
+    fetch_by_message_ids() returns: {message_id: (parsed, folder_label)}.
+    """
+    served = [BACKFILL_FIXTURE]
+    label = 'All Mail'
+    calls = []
+
+    def __init__(self, email_address, app_password):
+        pass
+
+    def fetch_by_message_ids(self, message_ids, progress=None):
+        FakeConnector.calls.append(set(message_ids))
+        available = {}
+        for raw in FakeConnector.served:
+            parsed = GmailIMAPConnector.parse_message(raw)
+            key = normalize_message_id(parsed['message_id'])
+            available[key] = (parsed, FakeConnector.label)
+        wanted = {normalize_message_id(m) for m in message_ids}
+        return True, {k: v for k, v in available.items() if k in wanted}
+
+
+class ParseMessageTests(SimpleTestCase):
+    """
+    parse_message() is shared by fetch_emails() and fetch_by_message_ids(),
+    so a re-fetch yields exactly what the original sync would have.
+    """
+
+    def test_parses_headers_body_and_urls(self):
+        parsed = GmailIMAPConnector.parse_message(BACKFILL_FIXTURE)
+        self.assertEqual(parsed['sender'], 'no-reply@dhl-delivery.top')
+        self.assertEqual(parsed['subject'], 'Package on hold')
+        self.assertEqual(parsed['message_id'], '<abc123@dhl-delivery.top>')
+        self.assertEqual(parsed['urls'], ['http://dhl-redelivery.click/pay'])
+        self.assertIn('package is on hold', parsed['body'])
+        # The decoy plain part must not be what gets stored
+        self.assertNotIn('enable HTML', parsed['body'])
+
+    def test_message_id_normalisation_survives_folding_and_padding(self):
+        self.assertEqual(
+            normalize_message_id('  <abc@x.com>\r\n '),
+            normalize_message_id('<abc@x.com>'),
+        )
+
+
+ARCHIVED_FIXTURE = BACKFILL_FIXTURE.replace(
+    b'<abc123@dhl-delivery.top>', b'<archived456@dhl-delivery.top>'
+)
+
+
+class FakeIMAPServer:
+    """
+    A scripted IMAP server, standing in for imaplib.IMAP4_SSL.
+
+    Covers the protocol interaction fetch_by_message_ids() actually performs —
+    LIST, SELECT, SEARCH HEADER, FETCH — which the command-level fake bypasses.
+    """
+
+    ATTRS = {
+        '[Gmail]/All Mail': rb'\HasNoChildren \All',
+        '[Gmail]/Spam':     rb'\HasNoChildren \Junk',
+        '[Gmail]/Trash':    rb'\HasNoChildren \Trash',
+        'INBOX':            rb'\HasNoChildren',
+    }
+
+    def __init__(self, folders):
+        self.folders = folders          # {folder_name: [raw_message_bytes]}
+        self.selected = None
+        self.searches = []              # (folder, criteria) per SEARCH
+        self.selects = []
+        self.readonly_selects = []
+        self.logged_in = False
+
+    def login(self, user, password):
+        self.logged_in = True
+        return 'OK', [b'authenticated']
+
+    def list(self):
+        lines = [
+            b'(' + self.ATTRS.get(name, rb'\HasNoChildren') + b') "/" "'
+            + name.encode() + b'"'
+            for name in self.folders
+        ]
+        return 'OK', lines
+
+    def select(self, folder, readonly=False):
+        self.selects.append(folder)
+        if folder not in self.folders:
+            return 'NO', [b'Unknown Mailbox']
+        self.selected = folder
+        if readonly:
+            self.readonly_selects.append(folder)
+        return 'OK', [str(len(self.folders[folder])).encode()]
+
+    def search(self, charset, *criteria):
+        self.searches.append((self.selected, criteria))
+        if criteria[0] != 'HEADER' or criteria[1] != 'Message-ID':
+            raise AssertionError(f'unexpected SEARCH criteria: {criteria}')
+        quoted = criteria[2]
+        if not (quoted.startswith('"') and quoted.endswith('"')):
+            raise AssertionError(f'Message-ID was not quoted: {quoted!r}')
+        wanted = quoted[1:-1]
+
+        hits = []
+        for index, raw in enumerate(self.folders[self.selected], start=1):
+            parsed = email.message_from_bytes(raw)
+            if normalize_message_id(parsed.get('Message-ID', '')) == wanted:
+                hits.append(str(index).encode())
+        return 'OK', [b' '.join(hits)]
+
+    def fetch(self, seq, spec):
+        if spec != '(BODY.PEEK[])':
+            raise AssertionError(f'fetch must peek, not mark read: {spec}')
+        raw = self.folders[self.selected][int(seq) - 1]
+        return 'OK', [(b'%s (BODY[] {%d}' % (seq, len(raw)), raw), b')']
+
+    def close(self):
+        self.selected = None
+
+    def logout(self):
+        self.logged_in = False
+
+
+class FetchByMessageIdTests(SimpleTestCase):
+    """
+    The lookup path itself: does it speak the protocol correctly, does it find
+    mail that is no longer in the Inbox, and does its cost track the number of
+    rows being repaired rather than the size of the mailbox?
+    """
+
+    def run_lookup(self, folders, message_ids):
+        server = FakeIMAPServer(folders)
+        connector = GmailIMAPConnector('u@gmail.com', 'pw')
+        with mock.patch('detector.imap_connector.imaplib.IMAP4_SSL',
+                        return_value=server) as ctor:
+            ok, result = connector.fetch_by_message_ids(message_ids)
+        return server, ok, result, ctor
+
+    def test_finds_a_message_that_was_archived_out_of_the_inbox(self):
+        """
+        The reported symptom: mail archived after syncing lives only in All
+        Mail. Searching Inbox and Spam alone would report it unrecoverable.
+        """
+        server, ok, result, _ = self.run_lookup(
+            {'INBOX': [], '[Gmail]/All Mail': [ARCHIVED_FIXTURE]},
+            ['<archived456@dhl-delivery.top>'],
+        )
+        self.assertTrue(ok)
+        parsed, label = result['<archived456@dhl-delivery.top>']
+        self.assertEqual(label, 'All Mail')
+        self.assertEqual(parsed['urls'], ['http://dhl-redelivery.click/pay'])
+
+    def test_finds_a_message_in_spam(self):
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': [], '[Gmail]/Spam': [BACKFILL_FIXTURE]},
+            ['<abc123@dhl-delivery.top>'],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(result['<abc123@dhl-delivery.top>'][1], 'Spam')
+
+    def test_cost_scales_with_rows_repaired_not_mailbox_size(self):
+        """
+        The whole point of SEARCH over a header scan: two rows to repair costs
+        two searches whether All Mail holds three messages or fifty thousand.
+        """
+        bulk = [
+            BACKFILL_FIXTURE.replace(b'<abc123@', b'<filler%d@' % i)
+            for i in range(200)
+        ]
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': bulk + [BACKFILL_FIXTURE, ARCHIVED_FIXTURE]},
+            ['<abc123@dhl-delivery.top>', '<archived456@dhl-delivery.top>'],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(server.searches), 2)
+
+    def test_a_found_message_is_not_searched_for_again_in_later_folders(self):
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': [BACKFILL_FIXTURE],
+             '[Gmail]/Spam': [],
+             '[Gmail]/Trash': []},
+            ['<abc123@dhl-delivery.top>'],
+        )
+        self.assertEqual(len(server.searches), 1)
+        self.assertEqual(server.searches[0][0], '[Gmail]/All Mail')
+
+    def test_folders_are_opened_read_only(self):
+        """A repair must never mark the user's mail as read."""
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': [BACKFILL_FIXTURE]},
+            ['<abc123@dhl-delivery.top>'],
+        )
+        self.assertEqual(server.readonly_selects, ['[Gmail]/All Mail'])
+        self.assertEqual(server.selects, server.readonly_selects)
+
+    def test_an_absent_folder_does_not_abort_the_lookup(self):
+        """Accounts without a Trash or Spam folder must still be repairable."""
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': [BACKFILL_FIXTURE]},
+            ['<abc123@dhl-delivery.top>'],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(len(result), 1)
+
+    def test_a_message_that_is_gone_returns_no_result_not_an_error(self):
+        server, ok, result, _ = self.run_lookup(
+            {'[Gmail]/All Mail': []},
+            ['<deleted@dhl-delivery.top>'],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(result, {})
+
+    def test_a_connection_timeout_is_reported_not_raised(self):
+        connector = GmailIMAPConnector('u@gmail.com', 'pw')
+        with mock.patch('detector.imap_connector.imaplib.IMAP4_SSL',
+                        side_effect=TimeoutError('timed out')):
+            ok, result = connector.fetch_by_message_ids(['<a@b.com>'])
+        self.assertFalse(ok)
+        self.assertIn('timed out', result)
+
+    def test_a_socket_timeout_is_configured(self):
+        """
+        imaplib defaults to no timeout, which would let an unattended backfill
+        block forever on a stalled read.
+        """
+        _, _, _, ctor = self.run_lookup(
+            {'[Gmail]/All Mail': [BACKFILL_FIXTURE]},
+            ['<abc123@dhl-delivery.top>'],
+        )
+        timeout = ctor.call_args.kwargs.get('timeout')
+        self.assertIsNotNone(timeout, 'no socket timeout was passed to imaplib')
+        self.assertGreater(timeout, 0)
+
+    def test_no_message_ids_makes_no_connection(self):
+        connector = GmailIMAPConnector('u@gmail.com', 'pw')
+        with mock.patch('detector.imap_connector.imaplib.IMAP4_SSL') as ctor:
+            ok, result = connector.fetch_by_message_ids([])
+        self.assertTrue(ok)
+        self.assertEqual(result, {})
+        ctor.assert_not_called()
+
+
+class FakeListConn:
+    """Just enough of an IMAP connection to answer LIST."""
+
+    def __init__(self, lines, status='OK'):
+        self.lines = lines
+        self.status = status
+
+    def list(self):
+        return self.status, self.lines
+
+
+# Gmail's real LIST output, abridged.
+GMAIL_LIST = [
+    b'(\\HasNoChildren) "/" "INBOX"',
+    b'(\\HasChildren \\Noselect) "/" "[Gmail]"',
+    b'(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"',
+    b'(\\HasNoChildren \\Junk) "/" "[Gmail]/Spam"',
+    b'(\\HasNoChildren \\Trash) "/" "[Gmail]/Trash"',
+    b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"',
+]
+
+# The same account with the interface language set to French. The display
+# names are translated; the special-use attributes are not.
+GMAIL_LIST_FRENCH = [
+    b'(\\HasNoChildren) "/" "INBOX"',
+    b'(\\HasNoChildren \\All) "/" "[Gmail]/Tous les messages"',
+    b'(\\HasNoChildren \\Junk) "/" "[Gmail]/Spam"',
+    b'(\\HasNoChildren \\Trash) "/" "[Gmail]/Corbeille"',
+]
+
+
+class FolderResolutionTests(SimpleTestCase):
+    """
+    A backfill has to look in All Mail, because archiving a message removes it
+    from the Inbox. Its name is localised per account, so it is located by the
+    \\All special-use attribute rather than by the English string.
+    """
+
+    def setUp(self):
+        self.connector = GmailIMAPConnector('u@gmail.com', 'pw')
+
+    def test_gmail_special_use_folders_are_resolved(self):
+        folders = self.connector._resolve_folders(FakeListConn(GMAIL_LIST))
+        self.assertEqual(folders, [
+            ('[Gmail]/All Mail', 'All Mail'),
+            ('[Gmail]/Spam', 'Spam'),
+            ('[Gmail]/Trash', 'Trash'),
+        ])
+
+    def test_localised_folder_names_are_resolved_by_attribute(self):
+        """The English fallback would silently find nothing on this account."""
+        folders = self.connector._resolve_folders(FakeListConn(GMAIL_LIST_FRENCH))
+        names = [name for name, _ in folders]
+        self.assertIn('[Gmail]/Tous les messages', names)
+        self.assertIn('[Gmail]/Corbeille', names)
+
+    def test_all_mail_is_searched_before_spam_and_trash(self):
+        """
+        All Mail holds everything that is not spam or trash, so trying it
+        first resolves the common case in one pass.
+        """
+        folders = self.connector._resolve_folders(FakeListConn(GMAIL_LIST))
+        self.assertEqual(folders[0][1], 'All Mail')
+
+    def test_a_server_without_special_use_falls_back_to_inbox(self):
+        """Non-Gmail IMAP may advertise no \\All folder at all."""
+        folders = self.connector._resolve_folders(
+            FakeListConn([b'(\\HasNoChildren) "/" "INBOX"'])
+        )
+        self.assertIn(('INBOX', 'Inbox'), folders)
+
+    def test_a_failed_list_still_yields_the_default_folders(self):
+        folders = self.connector._resolve_folders(FakeListConn(None, status='NO'))
+        self.assertIn(('[Gmail]/All Mail', 'All Mail'), folders)
+        self.assertIn(('INBOX', 'Inbox'), folders)
+
+    def test_search_arguments_are_quoted(self):
+        """An unquoted Message-ID would be a syntax error to the server."""
+        self.assertEqual(
+            GmailIMAPConnector._quote('<abc@mail.gmail.com>'),
+            '"<abc@mail.gmail.com>"',
+        )
+        self.assertEqual(
+            GmailIMAPConnector._quote('a"b'),
+            '"a\\"b"',
+        )
+
+
+class BackfillCommandTests(TestCase):
+    """
+    A re-sync cannot fix these rows: sync_gmail_account() skips any message_id
+    already stored, and the saved body is post-flattening text with the hrefs
+    already deleted. The command re-fetches from Gmail instead.
+    """
+
+    def setUp(self):
+        FakeConnector.served = [BACKFILL_FIXTURE]
+        FakeConnector.label = 'All Mail'
+        FakeConnector.calls = []
+        patcher = mock.patch(
+            'detector.management.commands.backfill_urls.GmailIMAPConnector',
+            FakeConnector,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.account = GmailAccount(email_address='user@gmail.com')
+        self.account.app_password = 'abcd efgh ijkl mnop'
+        self.account.save()
+
+    def make_email(self, **overrides):
+        """
+        A row as the pre-fix sync would have written it: flattened body, no
+        URLs, and a verdict reached without any URL signal.
+        """
+        defaults = dict(
+            account=self.account,
+            sender='no-reply@dhl-delivery.top',
+            sender_domain='dhl-delivery.top',
+            subject='Package on hold',
+            body='Dear User, your package is on hold. Confirm now to release it: Update now',
+            message_id='<abc123@dhl-delivery.top>',
+            status='safe',
+            risk_score=0.1,
+            url_score=0.0,
+            extracted_urls=[],
+        )
+        defaults.update(overrides)
+        return Email.objects.create(**defaults)
+
+    def run_command(self, *args):
+        out = StringIO()
+        call_command('backfill_urls', *args, stdout=out, stderr=out)
+        return out.getvalue()
+
+    def test_backfills_links_onto_an_existing_row(self):
+        email_obj = self.make_email()
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls,
+                         ['http://dhl-redelivery.click/pay'])
+        # The stored body becomes the HTML alternative, not the decoy
+        self.assertNotIn('enable HTML', email_obj.body)
+
+    def test_rescoring_uses_the_recovered_urls(self):
+        """
+        The old scores were computed as though the email had no links, so
+        leaving them would show phishing links beside a no-URL verdict.
+        """
+        email_obj = self.make_email()
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertGreater(email_obj.url_score, 0.0)
+
+    def test_a_verdict_that_becomes_a_threat_raises_an_alert(self):
+        """The original sync logged nothing, because it scored the mail safe."""
+        email_obj = self.make_email()
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        logs = ScanLog.objects.filter(email=email_obj)
+        if email_obj.status in ('phishing', 'suspicious'):
+            self.assertEqual(logs.count(), 1)
+            self.assertIn('re-scanned', logs.first().message)
+        else:
+            self.assertEqual(logs.count(), 0)
+
+    def test_urls_only_leaves_the_existing_verdict_alone(self):
+        email_obj = self.make_email()
+        self.run_command('--urls-only')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls,
+                         ['http://dhl-redelivery.click/pay'])
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertEqual(email_obj.risk_score, 0.1)
+        self.assertEqual(ScanLog.objects.count(), 0)
+
+    def test_dry_run_writes_nothing(self):
+        email_obj = self.make_email()
+        output = self.run_command('--dry-run')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls, [])
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertIn('would repair 1', output)
+
+    def test_rows_that_already_have_links_are_left_alone(self):
+        """
+        Post-fix emails are already correct — the default pass skips them, so
+        nothing is re-fetched and no verdict moves underneath the user.
+        """
+        self.make_email(extracted_urls=['http://dhl-redelivery.click/pay'])
+        self.run_command()
+
+        self.assertEqual(FakeConnector.calls, [])
+
+    def test_all_flag_reprocesses_rows_that_already_have_links(self):
+        """
+        A decoy plain part could leave a row with a URL but the wrong body,
+        which the default filter has no way to detect.
+        """
+        email_obj = self.make_email(extracted_urls=['http://old.example'],
+                                    body='Please enable HTML to view this message.')
+        self.run_command('--all')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls,
+                         ['http://dhl-redelivery.click/pay'])
+        self.assertNotIn('enable HTML', email_obj.body)
+
+    def test_an_email_no_longer_in_gmail_keeps_its_data(self):
+        """
+        Deleted or archived mail cannot be re-fetched; the row must survive
+        untouched rather than being blanked.
+        """
+        FakeConnector.served = []
+        email_obj = self.make_email()
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls, [])
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertIn('could not be found in Gmail', output)
+
+    def test_a_row_with_no_message_id_is_reported_not_crashed(self):
+        """Seeded demo emails have no Message-ID and cannot be matched back."""
+        email_obj = self.make_email(message_id='')
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.extracted_urls, [])
+        self.assertIn('no Message-ID', output)
+
+    def test_the_folder_the_sync_recorded_is_preserved(self):
+        """
+        why_flagged carries a '[Found in Spam]' tag from the original sync.
+        The backfill finds the message in All Mail, which says nothing about
+        where it was delivered, so re-deriving the tag would lose that.
+        """
+        email_obj = self.make_email(
+            why_flagged='[Found in Spam] Suspicious sender domain'
+        )
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertTrue(email_obj.why_flagged.startswith('[Found in Spam] '))
+        self.assertNotIn('All Mail', email_obj.why_flagged)
+
+    def test_no_folder_tag_is_invented_for_mail_that_had_none(self):
+        email_obj = self.make_email(why_flagged='Nothing suspicious found')
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertNotIn('[Found in', email_obj.why_flagged)
+
+    def test_unknown_account_is_rejected(self):
+        self.make_email()
+        output = self.run_command('--account', 'nobody@gmail.com')
+
+        self.assertIn('No active account', output)
+        self.assertEqual(FakeConnector.calls, [])

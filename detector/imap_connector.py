@@ -160,6 +160,19 @@ def extract_body_and_attachments(msg):
     return body_text.strip(), attachments, _dedupe(urls)
 
 
+def normalize_message_id(raw_value):
+    """
+    Canonical form of a Message-ID for comparison.
+
+    Headers can arrive folded across lines and with stray padding, so the same
+    ID can be stored one way and fetched back another. Collapsing whitespace
+    makes both sides comparable.
+    """
+    if not raw_value:
+        return ''
+    return re.sub(r'\s+', '', str(raw_value)).strip()
+
+
 def extract_urls_from_text(text):
     """Pull all URLs out of email body text."""
     if not text:
@@ -215,6 +228,43 @@ class GmailIMAPConnector:
         self.email_address = email_address.strip()
         # App passwords from Google come with spaces — remove them
         self.app_password = app_password.strip().replace(' ', '')
+
+    @staticmethod
+    def parse_message(raw_bytes, fallback_id=''):
+        """
+        Turn one message's raw RFC822 bytes into the dict the rest of the
+        pipeline consumes. Shared by fetch_emails() and fetch_by_message_ids()
+        so a re-fetch produces exactly what a fresh sync would have produced.
+        """
+        msg = email.message_from_bytes(raw_bytes)
+
+        # Decode the headers (they can be encoded in various charsets)
+        sender = decode_header_value(msg.get('From', ''))
+        subject = decode_header_value(msg.get('Subject', '(No Subject)'))
+        date_str = msg.get('Date', '')
+        message_id = msg.get('Message-ID', str(fallback_id))
+
+        # Extract body text, attachment filenames, and every URL in the
+        # message. URLs come back from here rather than being re-derived from
+        # `body`, because flattening HTML discards the tags the link targets
+        # live in.
+        body, attachments, urls = extract_body_and_attachments(msg)
+
+        # Clean up sender — extract just the email address
+        # e.g. "John Smith <john@example.com>" → "john@example.com"
+        sender_email_match = re.search(r'<([^>]+)>', sender)
+        sender_clean = sender_email_match.group(1) if sender_email_match else sender
+
+        return {
+            'sender': sender_clean,
+            'sender_display': sender,
+            'subject': subject or '(No Subject)',
+            'body': body[:5000],  # cap at 5000 chars for ML
+            'urls': urls,
+            'attachments': attachments,
+            'date_str': date_str,
+            'message_id': message_id,
+        }
 
     def test_connection(self):
         """
@@ -291,37 +341,9 @@ class GmailIMAPConnector:
                     # msg_data[0][1] is the raw email bytes
                     raw_bytes = msg_data[0][1]
 
-                    # email.message_from_bytes parses raw bytes into an
-                    # email.Message object with .get(), .walk() etc.
-                    msg = email.message_from_bytes(raw_bytes)
-
-                    # Decode the headers (they can be encoded in various charsets)
-                    sender = decode_header_value(msg.get('From', ''))
-                    subject = decode_header_value(msg.get('Subject', '(No Subject)'))
-                    date_str = msg.get('Date', '')
-                    message_id = msg.get('Message-ID', str(email_id))
-
-                    # Extract body text, attachment filenames, and every URL
-                    # in the message. URLs come back from here rather than
-                    # being re-derived from `body`, because flattening HTML
-                    # discards the tags the link targets live in.
-                    body, attachments, urls = extract_body_and_attachments(msg)
-
-                    # Clean up sender — extract just the email address
-                    # e.g. "John Smith <john@example.com>" → "john@example.com"
-                    sender_email_match = re.search(r'<([^>]+)>', sender)
-                    sender_clean = sender_email_match.group(1) if sender_email_match else sender
-
-                    parsed_emails.append({
-                        'sender': sender_clean,
-                        'sender_display': sender,
-                        'subject': subject or '(No Subject)',
-                        'body': body[:5000],  # cap at 5000 chars for ML
-                        'urls': urls,
-                        'attachments': attachments,
-                        'date_str': date_str,
-                        'message_id': message_id,
-                    })
+                    parsed_emails.append(
+                        self.parse_message(raw_bytes, fallback_id=email_id)
+                    )
 
                 except Exception:
                     # If one email fails to parse, skip it and continue
@@ -340,3 +362,182 @@ class GmailIMAPConnector:
             return False, f'Gmail connection error: {error}'
         except Exception as e:
             return False, f'Unexpected error: {str(e)}'
+
+    # ── Locating messages that are no longer in the Inbox ────────────────────
+
+    # Folders to search when repairing already-synced rows, in the order they
+    # are tried. Each entry is (special-use attribute, English fallback name,
+    # label). The attribute is what we actually match on: Gmail localises the
+    # display names ('[Gmail]/All Mail' is '[Gmail]/Tous les messages' on a
+    # French account), but advertises stable SPECIAL-USE flags in its LIST
+    # response, so the flag works on any locale.
+    #
+    # \All is Gmail's All Mail, which holds every message that is not spam or
+    # trash — including everything the user has archived out of the Inbox.
+    BACKFILL_FOLDERS = [
+        (rb'\All',   '[Gmail]/All Mail', 'All Mail'),
+        (rb'\Junk',  '[Gmail]/Spam',     'Spam'),
+        (rb'\Trash', '[Gmail]/Trash',    'Trash'),
+    ]
+
+    # A stalled read would otherwise block the command forever: imaplib leaves
+    # the socket timeout at None, and a backfill is typically run unattended.
+    TIMEOUT_SECONDS = 60
+
+    LIST_LINE_RE = re.compile(rb'^\((?P<attrs>[^)]*)\)\s+"[^"]*"\s+(?P<name>.+)$')
+
+    def _resolve_folders(self, conn):
+        """
+        Work out this account's real folder names from its LIST response.
+
+        Returns a list of (imap_folder_name, label). Falls back to the English
+        Gmail names for any special use the server does not advertise, and
+        always includes INBOX last as a backstop for non-Gmail servers that
+        expose no \\All folder at all.
+        """
+        by_attribute = {}
+        status, data = conn.list()
+        if status == 'OK':
+            for line in data or []:
+                if isinstance(line, tuple):
+                    line = b' '.join(part for part in line if part)
+                match = self.LIST_LINE_RE.match((line or b'').strip())
+                if not match:
+                    continue
+                name = match.group('name').strip().strip(b'"')
+                for attribute in match.group('attrs').split():
+                    by_attribute[attribute] = name.decode('utf-8', errors='replace')
+
+        folders = []
+        for attribute, fallback, label in self.BACKFILL_FOLDERS:
+            folders.append((by_attribute.get(attribute, fallback), label))
+
+        if not any(attribute in by_attribute for attribute, _, _ in self.BACKFILL_FOLDERS):
+            folders.append(('INBOX', 'Inbox'))
+        return folders
+
+    @staticmethod
+    def _quote(value):
+        """Quote a string for use as an IMAP SEARCH argument."""
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+        return f'"{escaped}"'
+
+    def fetch_by_message_ids(self, message_ids, progress=None):
+        """
+        Re-fetch specific already-known messages, looked up by Message-ID.
+
+        fetch_emails() only ever returns the newest N messages of a folder,
+        which is no use for repairing rows synced some time ago — and those
+        rows may not be in the Inbox at all any more, since archiving a
+        message moves it to All Mail.
+
+        Lookup is done with a server-side SEARCH per Message-ID rather than by
+        pulling every header in the folder. That matters: the header-scan
+        approach costs the same whether twelve rows need repair or twelve
+        thousand, and on All Mail — the folder that actually has to be
+        searched — it means transferring a header for every message the
+        account has ever received. SEARCH is O(rows being repaired) instead,
+        and each response is a handful of sequence numbers.
+
+        Folders are opened read-only, so a repair never marks a message as
+        read or otherwise disturbs the mailbox.
+
+        `progress` is an optional callable taking (label, found, total),
+        called once per folder.
+
+        Returns:
+            (True, {normalized_message_id: (parsed_email_dict, folder_label)})
+            (False, error_message_string) on failure
+        """
+        outstanding = {normalize_message_id(m) for m in message_ids}
+        outstanding.discard('')
+        if not outstanding:
+            return True, {}
+
+        total = len(outstanding)
+        found = {}
+        conn = None
+        selected = False
+
+        try:
+            conn = imaplib.IMAP4_SSL(self.IMAP_HOST, self.IMAP_PORT,
+                                     timeout=self.TIMEOUT_SECONDS)
+            conn.login(self.email_address, self.app_password)
+
+            for folder, label in self._resolve_folders(conn):
+                if not outstanding:
+                    break
+
+                if selected:
+                    conn.close()
+                    selected = False
+
+                status, _ = conn.select(folder, readonly=True)
+                if status != 'OK':
+                    # A folder the account does not have is not an error —
+                    # Trash and Spam are both absent on some configurations.
+                    continue
+                selected = True
+
+                for message_id in list(outstanding):
+                    parsed = self._fetch_one(conn, message_id)
+                    if parsed is not None:
+                        found[message_id] = (parsed, label)
+                        outstanding.discard(message_id)
+
+                if progress:
+                    progress(label, len(found), total)
+
+            return True, found
+
+        except imaplib.IMAP4.error as e:
+            error = str(e)
+            if 'AUTHENTICATIONFAILED' in error or 'Invalid credentials' in error:
+                return False, 'Authentication failed. Check your Gmail App Password.'
+            return False, f'Gmail connection error: {error}'
+        except OSError as e:
+            # Covers socket.timeout, which is an OSError subclass
+            return False, f'Gmail connection failed or timed out: {e}'
+        except Exception as e:
+            return False, f'Unexpected error: {str(e)}'
+        finally:
+            if conn is not None:
+                try:
+                    if selected:
+                        conn.close()
+                    conn.logout()
+                except Exception:
+                    pass
+
+    def _fetch_one(self, conn, message_id):
+        """
+        Find one message in the currently-selected folder by Message-ID and
+        return its parsed form, or None if it is not in this folder.
+        """
+        try:
+            status, data = conn.search(
+                None, 'HEADER', 'Message-ID', self._quote(message_id)
+            )
+            if status != 'OK' or not data or not data[0]:
+                return None
+
+            # A Message-ID should be unique, but duplicates do occur (the same
+            # message delivered twice); the first hit is as good as any.
+            seq = data[0].split()[0]
+
+            status, msg_data = conn.fetch(seq, '(BODY.PEEK[])')
+            if status != 'OK':
+                return None
+
+            for item in msg_data:
+                if not isinstance(item, tuple) or len(item) < 2:
+                    continue
+                parsed = self.parse_message(item[1])
+                # Guard against a server returning a near-match rather than
+                # the exact header we asked for.
+                if normalize_message_id(parsed['message_id']) == message_id:
+                    return parsed
+            return None
+        except Exception:
+            # One unfindable message must not abort the whole backfill
+            return None
