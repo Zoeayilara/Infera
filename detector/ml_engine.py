@@ -102,45 +102,94 @@ def _is_brand_impersonation(domain):
     return False, None
 
 
+# ── Known blind spots of the neural network ──────────────────────────────────
+# The 12 features below are every structured signal the model receives, and all
+# of them are derived from text. Two signals that this module computes and the
+# UI displays never reach the model at all:
+#
+#   * Sender-domain impersonation / suspicious sender TLD.
+#     _score_metadata() and _build_why_flagged() both detect it, so the detail
+#     page can print "Sender domain impersonates dhl" on an email the model
+#     scored 'safe'. This used to be fed in at index 10 — a slot the model had
+#     been trained to read as a bulk-mail *safe* marker, which inverted it:
+#     firing the impersonation signal pushed the verdict towards safe. It is
+#     now correctly absent rather than actively harmful.
+#
+#   * Attachments. `attachment` is accepted below and deliberately unused —
+#     training has no attachment feature to mirror. _score_attachment() returns
+#     0.92 for a .exe and the page prints "Dangerous executable attachment",
+#     but the model's verdict is unaffected.
+#
+# Closing either gap means adding a feature on BOTH sides and retraining. It
+# cannot be done in this file alone, and doing it here alone is what caused the
+# inversion above. See FeatureParityTests in detector/tests.py.
+
+
+def _feature_text(subject, body, urls):
+    """
+    Rebuild the flat text blob the model was trained on.
+
+    Training samples carry their URLs inline in the body
+    ("...verify now http://paypa1-support.net/verify"), and every training
+    feature is a regex over that one string. At serving time the URLs arrive
+    as a separate list — recovered from HTML href attributes, where they never
+    appear in the body text — so they have to be folded back in for the URL
+    features to fire at all. Links already inline are not repeated.
+    """
+    text = subject + ' ' + body
+    hidden_urls = [u for u in (urls or []) if u not in body]
+    if hidden_urls:
+        text += ' ' + ' '.join(hidden_urls)
+    return text.lower()
+
+
 def extract_hand_crafted_features(subject, body, sender, urls, attachment):
     """
-    Extract 12 numeric features for the neural network input.
-    These are the same features used during training.
+    Extract the 12 numeric features for the neural network input.
+
+    Every regex here is byte-for-byte the one in ml/train_model.py, at the same
+    index, because the saved .pkl was fitted against those exact definitions —
+    a feature that means something different here than it did during training
+    is read by the network as the trained meaning.
+
+    This is enforced by FeatureParityTests in detector/tests.py, which runs
+    fixtures through both extractors and compares the vectors. Change a regex
+    here without changing train_model.py (or vice versa) and that test fails.
+    Do not rely on this docstring; an earlier one claimed parity that had
+    silently stopped being true.
+
+    `sender` and `attachment` are accepted but unused — see the blind-spot note
+    above.
     """
-    text = (subject + ' ' + body).lower()
-    domain = sender.split('@')[-1].lower() if '@' in sender else sender.lower()
-
-    # Suspicious TLD in sender domain
-    sender_tld = '.' + domain.split('.')[-1] if '.' in domain else ''
-    is_susp_tld = 1 if sender_tld in SUSPICIOUS_TLDS else 0
-
-    # Brand impersonation
-    is_brand, _ = _is_brand_impersonation(domain)
+    t = _feature_text(subject, body, urls)
 
     features = [
-        # URL signals
-        1 if urls else 0,
-        min(len(urls), 5) / 5,
-        # Suspicious TLD in URLs
-        1 if any(('.' + u.split('.')[-1].split('/')[0]) in SUSPICIOUS_TLDS for u in urls) else 0,
-        # IP address URL
-        1 if any(re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', u) for u in urls) else 0,
-        # Urgency language
-        1 if re.search(r'\b(urgent|immediately|act now|within 24|within 48|expire|suspended)\b', text) else 0,
-        # Account threat language
-        1 if re.search(r'\b(suspended|blocked|locked|limited|restricted|frozen|compromised)\b', text) else 0,
-        # Credential request
-        1 if re.search(r'\b(password|credential|login|verify|confirm|bank detail|pin\b|cvv)\b', text) else 0,
-        # CTA phishing pattern
-        1 if re.search(r'\b(click here|click below|verify now|confirm now|update now)\b', text) else 0,
-        # Generic greeting
-        1 if re.search(r'\b(dear customer|dear user|dear valued|dear account)\b', text) else 0,
-        # Safe signals
-        1 if re.search(r'\b(best regards|kind regards|meeting|project|newsletter|unsubscribe)\b', text) else 0,
-        # Sender domain signals
-        1 if (is_susp_tld or is_brand) else 0,
-        # Text length (normalised)
-        min(len(text.split()), 200) / 200,
+        # 0,1 — URL presence and count
+        1 if re.search(r'https?://', t) else 0,
+        min(len(re.findall(r'https?://', t)), 5) / 5,
+
+        # 2,3 — Suspicious domain signals
+        1 if re.search(r'http://[^\s]*\.(xyz|tk|ml|ga|cf|pw|top|click)', t) else 0,
+        1 if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', t) else 0,
+
+        # 4,5 — Urgency signals
+        1 if re.search(r'\b(urgent|immediately|act now|within 24|within 48|expire)\b', t) else 0,
+        1 if re.search(r'\b(suspended|limited|blocked|locked|compromised)\b', t) else 0,
+
+        # 6,7 — Credential / financial request
+        1 if re.search(r'\b(password|credential|login|verify|confirm|bank detail|account number)\b', t) else 0,
+        1 if re.search(r'\b(click here|click below|click link|verify now|confirm now)\b', t) else 0,
+
+        # 8 — Generic greeting (phishing signal)
+        1 if re.search(r'\b(dear customer|dear user|dear valued|dear account holder)\b', t) else 0,
+
+        # 9,10 — Safe signals. Index 10 is the bulk-mail marker, NOT a sender
+        # signal — see the blind-spot note above before touching it.
+        1 if re.search(r'\b(best regards|kind regards|attached|meeting|project|team)\b', t) else 0,
+        1 if re.search(r'\b(unsubscribe|newsletter|view in browser)\b', t) else 0,
+
+        # 11 — Text length normalised
+        min(len(t.split()), 200) / 200,
     ]
     return features
 
@@ -152,8 +201,11 @@ def _neural_network_classify(sender, subject, body, urls, attachment):
     """
     import scipy.sparse as sp
 
-    # Build combined text for TF-IDF
-    combined_text = subject + ' ' + body + ' ' + sender
+    # Build combined text for TF-IDF. Same URL-folding as the hand-crafted
+    # features (see _feature_text), so a link that only ever existed inside an
+    # HTML href still reaches the vectorizer as domain tokens. The sender is
+    # appended for TF-IDF only — it is not part of the feature-vector text.
+    combined_text = _feature_text(subject, body, urls) + ' ' + sender
 
     # TF-IDF features
     tfidf_vec = _vectorizer.transform([combined_text])
