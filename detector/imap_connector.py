@@ -18,6 +18,7 @@ How IMAP works:
 import imaplib       # Python built-in: speaks IMAP protocol
 import email         # Python built-in: parses raw email bytes into objects
 import email.header  # for decoding encoded subjects like =?UTF-8?...
+import html as html_lib  # for unescaping &amp; &nbsp; etc. out of HTML bodies
 import re
 from datetime import datetime
 
@@ -44,6 +45,57 @@ def decode_header_value(raw_value):
     return ' '.join(decoded).strip()
 
 
+# A bare URL sitting in visible text, e.g. "verify at http://evil.example/go"
+URL_TEXT_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+# A link target sitting in a tag attribute, e.g. <a href="http://evil.example">.
+# Handles double-quoted, single-quoted and unquoted attribute values.
+HTML_LINK_ATTR_RE = re.compile(
+    r'(?:href|src)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))',
+    re.IGNORECASE,
+)
+
+# <script>/<style> bodies are markup plumbing, not something the user ever
+# reads — their contents would otherwise pollute the text sent to the model.
+SCRIPT_STYLE_RE = re.compile(
+    r'<(script|style)\b[^>]*>.*?</\1>', re.IGNORECASE | re.DOTALL
+)
+
+
+def _decode_part(part):
+    """Decode one MIME part's payload into a string, whatever its charset."""
+    try:
+        charset = part.get_content_charset() or 'utf-8'
+        return part.get_payload(decode=True).decode(charset, errors='replace')
+    except Exception:
+        return str(part.get_payload())
+
+
+def _html_to_text(html_source):
+    """
+    Flatten HTML into readable text for the ML text model.
+
+    IMPORTANT: this throws away every tag, and a link's target lives *inside*
+    its tag. Always harvest URLs with extract_urls_from_html() on the raw
+    markup BEFORE calling this — afterwards they are gone.
+    """
+    text = SCRIPT_STYLE_RE.sub(' ', html_source)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html_lib.unescape(text)          # &amp; &nbsp; &#39; → & <space> '
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _dedupe(urls):
+    """Drop duplicates while keeping the order they appeared in the email."""
+    seen = set()
+    unique = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
 def extract_body_and_attachments(msg):
     """
     An email can be 'multipart' (has both HTML + text + attachments)
@@ -51,9 +103,13 @@ def extract_body_and_attachments(msg):
 
     We walk through all parts and:
     - Collect the plain text body (preferred over HTML for analysis)
+    - Collect the HTML source, so links can be harvested from it
     - Collect attachment filenames
+
+    Returns (body_text, attachments, urls).
     """
-    body_text = ''
+    plain_source = ''
+    html_source = ''
     attachments = []
 
     if msg.is_multipart():
@@ -61,8 +117,8 @@ def extract_body_and_attachments(msg):
             content_type = part.get_content_type()
             disposition = str(part.get('Content-Disposition') or '')
 
-            # Skip multipart containers themselves
-            if content_type == 'multipart/alternative':
+            # Skip multipart containers themselves — mixed/related/alternative
+            if content_type.startswith('multipart/'):
                 continue
 
             # It's an attachment if it has Content-Disposition: attachment
@@ -72,44 +128,73 @@ def extract_body_and_attachments(msg):
                     attachments.append(decode_header_value(filename))
                 continue
 
-            # Grab plain text body (better for ML than HTML)
-            if content_type == 'text/plain' and not body_text:
-                try:
-                    charset = part.get_content_charset() or 'utf-8'
-                    body_text = part.get_payload(decode=True).decode(
-                        charset, errors='replace'
-                    )
-                except Exception:
-                    body_text = str(part.get_payload())
-
-            # Fall back to HTML if no plain text found
-            elif content_type == 'text/html' and not body_text:
-                try:
-                    charset = part.get_content_charset() or 'utf-8'
-                    html = part.get_payload(decode=True).decode(
-                        charset, errors='replace'
-                    )
-                    # Strip HTML tags for cleaner text analysis
-                    body_text = re.sub(r'<[^>]+>', ' ', html)
-                    body_text = re.sub(r'\s+', ' ', body_text).strip()
-                except Exception:
-                    pass
+            # Keep the two representations separately. We must not let a
+            # text/plain part shadow the HTML one: senders routinely ship a
+            # stub plain part ("Please enable HTML to view this message")
+            # while every link lives only in the HTML alternative.
+            if content_type == 'text/plain' and not plain_source:
+                plain_source = _decode_part(part)
+            elif content_type == 'text/html' and not html_source:
+                html_source = _decode_part(part)
     else:
         # Simple single-part email
-        try:
-            charset = msg.get_content_charset() or 'utf-8'
-            body_text = msg.get_payload(decode=True).decode(
-                charset, errors='replace'
-            )
-        except Exception:
-            body_text = str(msg.get_payload())
+        payload = _decode_part(msg)
+        if msg.get_content_type() == 'text/html':
+            html_source = payload
+        else:
+            plain_source = payload
 
-    return body_text.strip(), attachments
+    # Harvest links from the raw HTML first, while the tags still exist.
+    urls = extract_urls_from_text(plain_source)
+    urls += extract_urls_from_html(html_source)
+
+    # Body for the ML text model: the flattened HTML whenever there is one,
+    # falling back to the plain part. The HTML alternative is what the
+    # recipient's mail client actually renders, so it is the text the victim
+    # reads — and unlike the plain part it cannot be sandbagged, since an
+    # attacker is free to stuff a harmless decoy into a text/plain
+    # alternative that no one will ever see.
+    html_text = _html_to_text(html_source) if html_source else ''
+    body_text = html_text or plain_source
+
+    return body_text.strip(), attachments, _dedupe(urls)
 
 
 def extract_urls_from_text(text):
     """Pull all URLs out of email body text."""
-    return re.findall(r'https?://[^\s<>"\')\]]+', text)
+    if not text:
+        return []
+    return URL_TEXT_RE.findall(text)
+
+
+def extract_urls_from_html(html_source):
+    """
+    Pull all URLs out of raw HTML, before any tag stripping happens.
+
+    Two places a link can hide:
+      1. href="..." / src="..." attributes — the usual case for phishing,
+         where the visible text says "Click here" and the real target is
+         only ever present inside the tag.
+      2. A bare URL typed into the visible body text.
+
+    Attribute values are unescaped, since query strings arrive as
+    ...?id=1&amp;token=abc and would otherwise be captured with the entity.
+    """
+    if not html_source:
+        return []
+
+    urls = []
+    for match in HTML_LINK_ATTR_RE.finditer(html_source):
+        raw_value = match.group(1) or match.group(2) or match.group(3) or ''
+        value = html_lib.unescape(raw_value).strip()
+        # mailto:, tel:, cid: (inline images) and data: URIs are not web links
+        if value.lower().startswith(('http://', 'https://')):
+            urls.append(value)
+
+    # Bare URLs in the visible text, after entities are resolved
+    urls += extract_urls_from_text(_html_to_text(html_source))
+
+    return _dedupe(urls)
 
 
 # ── Main connector ────────────────────────────────────────────────────────────
@@ -216,11 +301,11 @@ class GmailIMAPConnector:
                     date_str = msg.get('Date', '')
                     message_id = msg.get('Message-ID', str(email_id))
 
-                    # Extract plain text body and attachment filenames
-                    body, attachments = extract_body_and_attachments(msg)
-
-                    # Extract URLs from body
-                    urls = extract_urls_from_text(body)
+                    # Extract body text, attachment filenames, and every URL
+                    # in the message. URLs come back from here rather than
+                    # being re-derived from `body`, because flattening HTML
+                    # discards the tags the link targets live in.
+                    body, attachments, urls = extract_body_and_attachments(msg)
 
                     # Clean up sender — extract just the email address
                     # e.g. "John Smith <john@example.com>" → "john@example.com"

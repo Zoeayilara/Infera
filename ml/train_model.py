@@ -119,8 +119,20 @@ def extract_hand_crafted_features(text):
     Extract 12 hand-crafted features from email text.
     These complement the TF-IDF embeddings in the neural network input.
 
-    This mirrors what your ml_engine.py does but outputs a numeric vector
-    suitable for the neural network input layer.
+    This is the definition of record: whatever these 12 regexes mean here is
+    what the saved .pkl learned them to mean, so detector/ml_engine.py must
+    compute the same value at the same index. That is enforced by
+    FeatureParityTests in detector/tests.py, which runs fixtures through both
+    extractors and compares the vectors — change a regex here without changing
+    ml_engine.py (or vice versa) and that test fails.
+
+    Retraining is what makes a *new* definition true. Editing one side alone
+    silently feeds the network a signal it was never trained on: index 10 once
+    diverged this way and ended up inverting the sender-impersonation signal.
+
+    Takes a single flat text blob because that is the shape of TRAINING_DATA,
+    with sender and URLs inline. ml_engine.py rebuilds that shape from its
+    structured inputs before calling its copy.
     """
     import re
     t = text.lower()
