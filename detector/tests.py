@@ -19,6 +19,7 @@ from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 
 from ml.train_model import extract_hand_crafted_features as training_features
@@ -30,6 +31,7 @@ from .imap_connector import (
     extract_urls_from_text,
     normalize_message_id,
 )
+from .management.commands.rescore_emails import SEVERITY
 from .models import Email, GmailAccount, ScanLog
 from .ml_engine import (
     RISK_PHISHING,
@@ -1254,3 +1256,191 @@ class BackfillCommandTests(TestCase):
 
         self.assertIn('No active account', output)
         self.assertEqual(FakeConnector.calls, [])
+
+
+# ── Re-scoring stored rows onto the current engine ───────────────────────────
+
+class RescoreCommandTests(TestCase):
+    """
+    A stored verdict was produced by whatever the engine looked like when the
+    row was written, so an engine change leaves the table holding two regimes.
+    rescore_emails brings old rows forward from data already in the database —
+    no Gmail access, and it reaches rows backfill_urls cannot, because those are
+    selected by account.
+    """
+
+    # Bland wording, risk only in the attachment: the model scores this near
+    # zero, so the escalation floor is what moves it.
+    EXE_ROW = dict(
+        attachment_name='handbook.exe',
+        has_attachment=True,
+    )
+
+    def make_email(self, **overrides):
+        defaults = dict(
+            sender='hr@somecompany.com',
+            subject='Updated staff handbook',
+            body='Please see the attached handbook. Best regards, HR',
+            status='safe',
+            risk_score=0.02,
+            extracted_urls=[],
+        )
+        defaults.update(overrides)
+        return Email.objects.create(**defaults)
+
+    def run_command(self, *args):
+        out = StringIO()
+        call_command('rescore_emails', *args, stdout=out, stderr=out)
+        return out.getvalue()
+
+    # ── Reaches rows backfill_urls cannot ────────────────────────────────────
+
+    def test_rescores_a_seeded_row_with_no_account_or_message_id(self):
+        """
+        backfill_urls filters on account=<account>, so it selects none of these.
+        This command must not need an account, a Message-ID, or the network.
+        """
+        email_obj = self.make_email(**self.EXE_ROW)
+        self.assertIsNone(email_obj.account)
+        self.assertEqual(email_obj.message_id, '')
+
+        self.run_command()
+        email_obj.refresh_from_db()
+        self.assertEqual(email_obj.status, 'suspicious')
+
+    def test_is_idempotent(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        self.run_command()
+        email_obj.refresh_from_db()
+        first = (email_obj.status, email_obj.risk_score, email_obj.why_flagged)
+
+        self.run_command()
+        email_obj.refresh_from_db()
+        self.assertEqual(
+            (email_obj.status, email_obj.risk_score, email_obj.why_flagged),
+            first,
+        )
+
+    # ── Direction asymmetry ──────────────────────────────────────────────────
+
+    def test_escalations_are_applied_by_default(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'suspicious')
+        self.assertIn('Escalations (applied)', output)
+
+    def test_de_escalations_are_listed_but_not_applied_by_default(self):
+        """
+        Lowering a verdict un-flags mail someone may already have acted on, so a
+        default run reports it and leaves the row as it is.
+        """
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'phishing')
+        self.assertEqual(email_obj.risk_score, 0.91)
+        self.assertIn('De-escalations (NOT applied)', output)
+        self.assertIn('--apply-de-escalations', output)
+
+    def test_de_escalations_are_applied_only_with_the_flag(self):
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        self.run_command('--apply-de-escalations')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertLess(email_obj.risk_score, RISK_SUSPICIOUS)
+
+    def test_a_default_run_never_lowers_any_verdict(self):
+        rows = [
+            self.make_email(status='phishing', risk_score=0.91),
+            self.make_email(status='suspicious', risk_score=0.44),
+            self.make_email(**self.EXE_ROW),
+        ]
+        before = [(e.id, e.status) for e in rows]
+        self.run_command()
+
+        for email_id, old in before:
+            with self.subTest(email_id=email_id):
+                new = Email.objects.get(id=email_id).status
+                self.assertGreaterEqual(SEVERITY[new], SEVERITY[old])
+
+    # ── Refusal when the model is missing ────────────────────────────────────
+
+    def test_refuses_to_run_without_the_trained_model(self):
+        """
+        Re-scoring through the rule-based fallback would swap model verdicts for
+        rule verdicts on every row, with nothing in the data recording it.
+        """
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        with mock.patch(
+            'detector.management.commands.rescore_emails._load_model',
+            return_value=False,
+        ):
+            with self.assertRaises(CommandError) as ctx:
+                self.run_command()
+
+        self.assertIn('rule-based fallback', str(ctx.exception))
+        email_obj.refresh_from_db()
+        self.assertEqual(email_obj.status, 'phishing')
+
+    # ── Bookkeeping ──────────────────────────────────────────────────────────
+
+    def test_dry_run_writes_nothing(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        output = self.run_command('--dry-run')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertEqual(email_obj.risk_score, 0.02)
+        self.assertIn('dry-run', output)
+        self.assertEqual(ScanLog.objects.count(), 0)
+
+    def test_an_escalation_raises_an_alert(self):
+        """The original sync never alerted on this row; the escalation must."""
+        self.make_email(**self.EXE_ROW)
+        self.run_command()
+
+        log = ScanLog.objects.get()
+        self.assertEqual(log.level, 'warning')
+        self.assertIn('rescore_emails', log.message)
+
+    def test_the_folder_tag_the_sync_recorded_is_preserved(self):
+        email_obj = self.make_email(
+            why_flagged='[Found in Spam] No suspicious indicators detected.',
+            **self.EXE_ROW
+        )
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertTrue(email_obj.why_flagged.startswith('[Found in Spam] '))
+        self.assertIn('rule override', email_obj.why_flagged)
+
+    def test_no_folder_tag_is_invented_for_mail_that_had_none(self):
+        email_obj = self.make_email(why_flagged='', **self.EXE_ROW)
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertNotIn('[Found in', email_obj.why_flagged)
+
+    def test_scores_are_refreshed_even_when_the_verdict_does_not_move(self):
+        """
+        Drift can move the numbers without crossing a band. Leaving stale scores
+        beside a current verdict is the incoherence this work set out to remove.
+        """
+        email_obj = self.make_email(attachment_name='notes.pdf',
+                                    has_attachment=True,
+                                    attachment_score=0.99)
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertLess(email_obj.attachment_score, 0.5)
+
+    def test_unknown_account_is_rejected(self):
+        self.make_email()
+        with self.assertRaises(CommandError) as ctx:
+            self.run_command('--account', 'nobody@gmail.com')
+        self.assertIn('No emails found', str(ctx.exception))
