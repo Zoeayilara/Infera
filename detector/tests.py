@@ -14,6 +14,7 @@ Run: python manage.py test detector
 
 import email
 import inspect
+import io
 import re
 from io import StringIO
 from unittest import mock
@@ -1444,3 +1445,184 @@ class RescoreCommandTests(TestCase):
         with self.assertRaises(CommandError) as ctx:
             self.run_command('--account', 'nobody@gmail.com')
         self.assertIn('No emails found', str(ctx.exception))
+
+
+# ── Console output under a redirected Windows console ─────────────────────────
+
+def codepage_stream(encoding):
+    """
+    A stdout stand-in that behaves like a redirected Windows console.
+
+    Python uses UTF-8 for an *attached* console (PEP 528, io._WindowsConsoleIO)
+    but falls back to the locale encoding the moment stdout is piped or
+    redirected to a file, which is what happens under CI, a task scheduler, or
+    `cmd > log.txt`. StringIO accepts any codepoint and so hides this entirely.
+    errors='strict' is the point: it raises exactly as the real stream does.
+    """
+    buf = io.BytesIO()
+    return buf, io.TextIOWrapper(buf, encoding=encoding, errors='strict',
+                                 newline='')
+
+
+class ConsoleEncodingTests(TestCase):
+    """
+    Non-ASCII in console output crashes these commands when stdout is
+    redirected. Not hypothetically: backfill_urls wrote a U+2500 box rule per
+    account before any verdict changed, so the command could not complete a
+    single run under redirection.
+
+    Which codepoints raise depends on the codepage, so asserting ASCII is the
+    only portable rule. U+2014 EM DASH happens to be encodable in cp1252 and so
+    survived there, but fails on cp437/cp850; U+2500 fails on cp1252 and
+    succeeds on cp437; U+2192 fails on all of them.
+    """
+
+    CODEPAGES = ('cp1252', 'cp437', 'cp850', 'ascii')
+
+    def run_on_codepage(self, command, encoding, *args):
+        buf, stream = codepage_stream(encoding)
+        call_command(command, *args, stdout=stream, stderr=stream)
+        stream.flush()
+        return buf.getvalue().decode(encoding)
+
+    def setUp(self):
+        FakeConnector.served = [BACKFILL_FIXTURE]
+        FakeConnector.label = 'All Mail'
+        FakeConnector.calls = []
+        patcher = mock.patch(
+            'detector.management.commands.backfill_urls.GmailIMAPConnector',
+            FakeConnector,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.account = GmailAccount(email_address='user@gmail.com')
+        self.account.app_password = 'abcd efgh ijkl mnop'
+        self.account.save()
+
+    # ── Interpolated data, not literals ──────────────────────────────────────
+
+    # A real stored subject from db.sqlite3 (row 10). U+2014 is encodable in
+    # cp1252 as byte 0x97 but not in cp437/cp850/ascii, so it exercises both
+    # sides of the degradation.
+    NON_ASCII_SUBJECT = 'Remote job offer — $3,000/month work from home'
+
+    def test_a_non_ascii_subject_degrades_instead_of_raising(self):
+        """
+        Subjects are attacker-supplied and never guaranteed ASCII, so the fix
+        cannot be "make every literal ASCII". handle() relaxes the stream's
+        error handler, which covers every interpolated field at once and leaves
+        the stored data alone — only the rendering degrades.
+        """
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                stored = Email.objects.create(
+                    sender='hr@remote-jobs-worldwide.net',
+                    subject=self.NON_ASCII_SUBJECT,
+                    body='We found your profile online.',
+                    status='phishing', risk_score=0.91, extracted_urls=[],
+                )
+                out = self.run_on_codepage('rescore_emails', encoding)
+
+                # The row is reported, and the run completed.
+                self.assertIn('De-escalations', out)
+                self.assertIn('Remote job offer', out)
+
+                if encoding == 'cp1252':
+                    # Encodable here: full fidelity is preserved.
+                    self.assertIn('—', out)
+                else:
+                    # Not encodable: one character degrades, nothing raises.
+                    self.assertIn('?', out)
+                    self.assertNotIn('—', out)
+
+                # The stored subject is untouched either way.
+                stored.refresh_from_db()
+                self.assertEqual(stored.subject, self.NON_ASCII_SUBJECT)
+
+    def test_backfill_output_is_encodable_on_every_codepage(self):
+        """
+        Covers the per-account header, which fires unconditionally, and the
+        old_status -> new_status transition line.
+
+        Now that handle() relaxes the error handler this asserts the command
+        completes rather than that every byte was encodable; the ASCII rule for
+        our own literals is enforced statically below.
+        """
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                Email.objects.create(
+                    account=self.account,
+                    sender='no-reply@dhl-delivery.top',
+                    subject='Package on hold',
+                    body='Dear User, confirm now to release it.',
+                    message_id='<abc123@dhl-delivery.top>',
+                    status='safe',
+                    risk_score=0.1,
+                    extracted_urls=[],
+                )
+                out = self.run_on_codepage('backfill_urls', encoding)
+                self.assertIn('user@gmail.com', out)
+
+    def test_rescore_output_is_encodable_on_every_codepage(self):
+        """Covers both the escalation and the de-escalation report paths."""
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                Email.objects.create(          # escalates
+                    sender='hr@somecompany.com',
+                    subject='Updated staff handbook',
+                    body='Please see the attached handbook. Best regards, HR',
+                    attachment_name='handbook.exe', has_attachment=True,
+                    status='safe', risk_score=0.02, extracted_urls=[],
+                )
+                Email.objects.create(          # de-escalates
+                    sender='hr@somecompany.com',
+                    subject='Updated staff handbook',
+                    body='Please see the attached handbook. Best regards, HR',
+                    status='phishing', risk_score=0.91, extracted_urls=[],
+                )
+                out = self.run_on_codepage('rescore_emails', encoding)
+                self.assertIn('De-escalations', out)
+                self.assertIn('Escalations', out)
+
+    def test_every_console_literal_in_these_commands_is_ascii(self):
+        """
+        A static guard, because the crashing site only executes when an account
+        exists and a run that finds no accounts skips it. Docstrings and DB text
+        are excluded: they are never encoded to the console codepage. seeded
+        email bodies legitimately contain non-ASCII and are not console output.
+        """
+        import ast
+        import pathlib
+
+        for name in ('backfill_urls.py', 'rescore_emails.py'):
+            path = (pathlib.Path(__file__).parent / 'management' / 'commands'
+                    / name)
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+
+            # Collect literals that flow into self.stdout/self.stderr writes or
+            # a CommandError, i.e. everything that reaches the console.
+            offenders = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = ''
+                if isinstance(node.func, ast.Attribute):
+                    target = node.func.attr
+                elif isinstance(node.func, ast.Name):
+                    target = node.func.id
+                if target not in ('write', 'CommandError'):
+                    continue
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Constant)
+                            and isinstance(sub.value, str)
+                            and not sub.value.isascii()):
+                        offenders.append(
+                            f'{name}:{sub.lineno} '
+                            f'{ascii(sub.value[:50])}'
+                        )
+
+            self.assertEqual(offenders, [], f'non-ASCII console output: {offenders}')

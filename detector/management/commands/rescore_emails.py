@@ -42,6 +42,8 @@ import re
 from detector.ml_engine import classify_email, _load_model
 from detector.models import Email, ScanLog
 
+from ._console import make_console_tolerant
+
 # Same tag backfill_urls preserves: the original sync recorded which folder the
 # message arrived in as a why_flagged prefix. Re-scoring cannot rediscover it,
 # so it is carried over rather than dropped.
@@ -73,6 +75,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # Email subjects are interpolated into the progress lines below and are
+        # not guaranteed ASCII, so let them degrade rather than kill the run
+        # when stdout is redirected to a non-UTF-8 stream. See _console.py.
+        make_console_tolerant(self.stdout, self.stderr)
+
         # Refuse rather than silently re-scoring the whole table through the
         # rule-based fallback. That would swap model verdicts for rule verdicts
         # on every row, and afterwards nothing in the data would record that it
@@ -138,7 +145,7 @@ class Command(BaseCommand):
         if de_escalations:
             self.stdout.write('')
             applied = options['apply_de_escalations']
-            header = ('De-escalations (applied — verdicts lowered):' if applied
+            header = ('De-escalations (applied - verdicts lowered):' if applied
                       else 'De-escalations (NOT applied):')
             self.stdout.write(self.style.WARNING(header))
             for email_obj, result, old, new in de_escalations:
@@ -157,7 +164,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f'{len(de_escalations)} row(s) now score lower and were left '
                 f'as they are. These are mail that is currently flagged and '
-                f'would become less severe — review them, then re-run with '
+                f'would become less severe - review them, then re-run with '
                 f'--apply-de-escalations to apply.'
             ))
         elif de_escalations:
