@@ -32,9 +32,13 @@ from .imap_connector import (
 )
 from .models import Email, GmailAccount, ScanLog
 from .ml_engine import (
+    RISK_PHISHING,
+    RISK_SUSPICIOUS,
+    _escalate,
     _feature_text,
     classify_email,
     extract_hand_crafted_features as serving_features,
+    status_from_risk,
 )
 
 
@@ -307,6 +311,105 @@ class ScoringTests(SimpleTestCase):
             urls=urls,
         )
         self.assertEqual(result['status'], 'safe')
+
+
+# ── Verdict coherence and blind-spot escalation ──────────────────────────────
+
+# A bland email whose only risk signal is the attachment. Deliberately worded to
+# score near zero on every trained feature, so any escalation is unambiguous.
+BLAND = dict(
+    subject='Updated staff handbook',
+    body='Please see the attached handbook. Best regards, HR',
+)
+
+
+class VerdictCoherenceTests(SimpleTestCase):
+    """
+    status is derived from risk_score and never set beside it, so the badge and
+    the percentage on the detail page cannot contradict each other. This used to
+    be possible: the network path labelled from argmax(probas) while risk_score
+    was computed separately from the same probabilities.
+    """
+
+    def test_bands_map_as_documented(self):
+        self.assertEqual(status_from_risk(RISK_PHISHING), 'phishing')
+        self.assertEqual(status_from_risk(RISK_SUSPICIOUS), 'suspicious')
+        self.assertEqual(status_from_risk(RISK_SUSPICIOUS - 0.001), 'safe')
+        self.assertEqual(status_from_risk(0.0), 'safe')
+        self.assertEqual(status_from_risk(1.0), 'phishing')
+
+    def test_status_always_agrees_with_risk_score(self):
+        cases = [
+            ('hr@somecompany.com',      'handbook.exe'),
+            ('billing@dhl-delivery.com','label.exe'),
+            ('hr@somecompany.com',      'handbook.pdf'),
+            ('billing@dhl-delivery.com',''),
+            ('news@techcrunch.com',     ''),
+            ('x@paypa1.xyz',            'invoice.scr'),
+        ]
+        for sender, attachment in cases:
+            with self.subTest(sender=sender, attachment=attachment):
+                r = classify_email(sender=sender, attachment=attachment, **BLAND)
+                self.assertEqual(r['status'], status_from_risk(r['risk_score']))
+
+
+class BlindSpotEscalationTests(SimpleTestCase):
+    """
+    The model cannot see attachments at all — there is no attachment feature on
+    either side of train/serve (see FeatureParityTests). Until that is a real
+    feature and the model is retrained, these floors carry the signal.
+    """
+
+    def test_dangerous_attachment_alone_is_suspicious_not_phishing(self):
+        """An .exe is dangerous but is not on its own proof of phishing."""
+        r = classify_email(sender='hr@somecompany.com',
+                           attachment='handbook.exe', **BLAND)
+        self.assertEqual(r['status'], 'suspicious')
+        self.assertTrue(r['escalated'])
+        # The precise incoherence that prompted this: high attachment score
+        # sitting next to a safe verdict.
+        self.assertGreater(r['attachment_score'], 0.6)
+        self.assertEqual(status_from_risk(r['model_risk_score']), 'safe')
+
+    def test_dangerous_attachment_with_impersonation_is_phishing(self):
+        r = classify_email(sender='billing@dhl-delivery.com',
+                           attachment='label.exe', **BLAND)
+        self.assertEqual(r['status'], 'phishing')
+        self.assertTrue(r['escalated'])
+
+    def test_benign_attachment_does_not_escalate(self):
+        for attachment in ('handbook.pdf', 'notes.docx', ''):
+            with self.subTest(attachment=attachment):
+                r = classify_email(sender='hr@somecompany.com',
+                                   attachment=attachment, **BLAND)
+                self.assertFalse(r['escalated'])
+                self.assertEqual(r['risk_score'], r['model_risk_score'])
+
+    def test_escalation_never_lowers_a_higher_model_risk(self):
+        """The floor asserts 'at least this bad', it does not overwrite."""
+        self.assertEqual(_escalate(0.9, 'a@b.com', 'x.exe'), (0.9, []))
+        self.assertEqual(_escalate(0.9, 'billing@dhl-delivery.com', 'x.exe'),
+                         (0.9, []))
+        risk, reasons = _escalate(0.3, 'billing@dhl-delivery.com', 'x.exe')
+        self.assertEqual(risk, RISK_PHISHING)
+        self.assertTrue(reasons)
+
+    def test_an_override_is_distinguishable_from_a_model_verdict(self):
+        """
+        An escalated verdict and a model verdict must not read identically on
+        the page, or the override is invisible.
+        """
+        escalated = classify_email(sender='hr@somecompany.com',
+                                   attachment='handbook.exe', **BLAND)
+        self.assertIn('rule override', escalated['why_flagged'])
+        self.assertIn('.exe', escalated['why_flagged'])
+        # States what the model said on its own, so the override is auditable.
+        self.assertIn('2%', escalated['why_flagged'])
+
+        plain = classify_email(sender='hr@somecompany.com',
+                              attachment='handbook.pdf', **BLAND)
+        self.assertIn('neural network', plain['why_flagged'])
+        self.assertNotIn('rule override', plain['why_flagged'])
 
 
 # ── Train/serve feature parity ───────────────────────────────────────────────
