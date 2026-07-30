@@ -86,6 +86,25 @@ SAFE_KEYWORDS = [
 ]
 
 
+# ── Verdict bands — the single source of truth ────────────────────────────────
+# risk_score is the number the detail page shows, and status is derived from it
+# by status_from_risk() and nowhere else. Both classifier paths return a risk
+# and let classify_email() label it, so the badge and the percentage cannot
+# disagree. Anything that wants to change the verdict must move the risk.
+
+RISK_PHISHING   = 0.55
+RISK_SUSPICIOUS = 0.28
+
+
+def status_from_risk(risk):
+    """Map a risk score to a verdict label. The only place this mapping lives."""
+    if risk >= RISK_PHISHING:
+        return 'phishing'
+    if risk >= RISK_SUSPICIOUS:
+        return 'suspicious'
+    return 'safe'
+
+
 def _is_brand_impersonation(domain):
     d = domain.lower()
     TRUSTED = ['paypal.com', 'amazon.com', 'microsoft.com', 'apple.com',
@@ -118,11 +137,17 @@ def _is_brand_impersonation(domain):
 #   * Attachments. `attachment` is accepted below and deliberately unused —
 #     training has no attachment feature to mirror. _score_attachment() returns
 #     0.92 for a .exe and the page prints "Dangerous executable attachment",
-#     but the model's verdict is unaffected.
+#     but the model's output is unaffected.
 #
-# Closing either gap means adding a feature on BOTH sides and retraining. It
-# cannot be done in this file alone, and doing it here alone is what caused the
-# inversion above. See FeatureParityTests in detector/tests.py.
+# Closing either gap properly means adding a feature on BOTH sides and
+# retraining. It cannot be done in this file alone, and doing it here alone is
+# what caused the inversion above. See FeatureParityTests in detector/tests.py.
+#
+# In the meantime _escalate() floors the risk score on the attachment signal, so
+# a .exe no longer lands as 'safe'. That is a patch over the blind spot, not a
+# fix for it: the model still cannot weigh the attachment against anything else,
+# and the sender blind spot is still uncovered — a domain impersonating a brand
+# only moves the verdict when it arrives alongside an executable.
 
 
 def _feature_text(subject, body, urls):
@@ -196,8 +221,15 @@ def extract_hand_crafted_features(subject, body, sender, urls, attachment):
 
 def _neural_network_classify(sender, subject, body, urls, attachment):
     """
-    Use the trained MLP neural network to classify the email.
-    Returns (status, risk_score, confidence_scores)
+    Use the trained MLP neural network to score the email.
+    Returns (risk_score, confidence_scores).
+
+    Deliberately does not return a status. It used to label the email from
+    argmax(probas) while risk_score was computed separately from the same
+    probabilities, and the two could contradict each other: probabilities of
+    (safe .49, suspicious .49, phishing .02) put argmax on 'suspicious' while
+    the risk worked out to 26.5%, i.e. a Suspicious badge over a number inside
+    the safe band. The caller now derives the label from the risk alone.
     """
     import scipy.sparse as sp
 
@@ -227,24 +259,17 @@ def _neural_network_classify(sender, subject, body, urls, attachment):
     # The risk score is the phishing probability + half suspicious
     risk_score = round(float(p_phish + p_susp * 0.5), 3)
 
-    # Status from highest probability class
-    pred_class = int(np.argmax(probas))
-    if pred_class == 2:
-        status = 'phishing'
-    elif pred_class == 1:
-        status = 'suspicious'
-    else:
-        # Even if model says safe, if risk_score is high override it
-        status = 'phishing' if risk_score >= 0.55 else \
-                 'suspicious' if risk_score >= 0.28 else 'safe'
-
-    return status, min(risk_score, 1.0), probas
+    return min(risk_score, 1.0), probas
 
 
 # ── Rule-based fallback (used if model not trained yet) ───────────────────────
 
 def _rule_based_classify(sender, subject, body, urls, attachment):
-    """Fallback heuristic classifier used before model is trained."""
+    """
+    Fallback heuristic classifier used before model is trained.
+    Returns (risk_score, flags). Like the network path, it does not label the
+    email — classify_email() derives the status from the risk.
+    """
     text = (subject + ' ' + body).lower()
     domain = sender.split('@')[-1].lower() if '@' in sender else sender.lower()
 
@@ -288,8 +313,7 @@ def _rule_based_classify(sender, subject, body, urls, attachment):
             score += 0.90; flags.append(f'malicious attachment: {ext}')
 
     score = round(max(0.0, min(score, 1.0)), 3)
-    status = 'phishing' if score >= 0.55 else 'suspicious' if score >= 0.28 else 'safe'
-    return status, score, '; '.join(set(flags)) or 'No suspicious indicators'
+    return score, '; '.join(set(flags)) or 'No suspicious indicators'
 
 
 # ── Per-modality scores (for the detail page breakdown) ──────────────────────
@@ -350,8 +374,96 @@ def _score_attachment(filename):
     return 0.0
 
 
-def _build_why_flagged(sender, subject, body, urls, attachment, status):
-    """Build a human-readable explanation of why the email was flagged."""
+# ── Rule escalations for the model's blind spots ──────────────────────────────
+
+def _dangerous_attachment(attachment):
+    """Return the extension if it is an executable type, else None."""
+    if not attachment:
+        return None
+    ext = os.path.splitext(attachment.lower())[1]
+    return ext if ext in MALICIOUS_EXTENSIONS else None
+
+
+def _escalate(risk, sender, attachment):
+    """
+    Raise the risk floor for signals the neural network provably cannot see.
+
+    All 12 trained features are regexes over subject+body+URLs. There is no
+    attachment feature on either side of train/serve, so a .exe cannot move the
+    model's output at all — see the blind-spot note above. Until that is a real
+    feature in ml/train_model.py and the model is retrained, the floor is
+    applied here.
+
+    Floors are the band minimums rather than fixed high numbers: the rule
+    asserts "at least this bad" and never lowers a model score already above it.
+
+    Returns (risk, [reason, ...]); the reasons are empty when nothing moved.
+    """
+    ext = _dangerous_attachment(attachment)
+    if not ext:
+        return risk, []
+
+    domain = sender.split('@')[-1].lower() if '@' in sender else sender.lower()
+    is_imp, brand = _is_brand_impersonation(domain)
+
+    if is_imp:
+        # An executable alone is dangerous but is not proof of phishing. An
+        # executable from a domain impersonating a brand is.
+        floor = RISK_PHISHING
+        reason = (f'dangerous executable attachment ({ext}) from a sender '
+                  f'domain impersonating {brand}')
+    else:
+        floor = RISK_SUSPICIOUS
+        reason = f'dangerous executable attachment ({ext})'
+
+    if risk >= floor:
+        return risk, []
+    return floor, [reason]
+
+
+SOURCE_LABELS = {
+    'neural_network': 'neural network',
+    'rule_based':     'rule-based heuristics (model not trained)',
+}
+
+
+def _compose_why(signals, status, source, model_risk, final_risk, escalations):
+    """
+    Build the detail-page explanation, stating where the verdict came from.
+
+    An escalated verdict and a model verdict are otherwise indistinguishable on
+    the page, so the provenance is spelled out: which component decided, what
+    the model said on its own, and which rule moved it.
+    """
+    src = SOURCE_LABELS.get(source, source)
+
+    if escalations:
+        provenance = (
+            f'Verdict source: rule override — {"; ".join(escalations)}. '
+            f'Risk raised to {round(final_risk * 100)}% '
+            f'(the {src} alone scored this '
+            f'{status_from_risk(model_risk)} at {round(model_risk * 100)}%).'
+        )
+    else:
+        provenance = (f'Verdict source: {src} — '
+                      f'{status} at {round(final_risk * 100)}% risk.')
+
+    if signals:
+        return provenance + '\nSignals: ' + '; '.join(signals)
+    if status == 'safe':
+        return (provenance +
+                '\nNo suspicious indicators detected — email appears legitimate.')
+    return provenance + '\nLow-confidence risk signals detected.'
+
+
+def _detected_signals(sender, subject, body, urls, attachment):
+    """
+    Collect the human-readable signals present in the email.
+
+    These are read off the same rule scorers that produce the modality scores,
+    so they describe what the rules saw — not what the model weighed. Several
+    of them (sender impersonation, attachments) are invisible to the model.
+    """
     reasons = []
     text = (subject + ' ' + body).lower()
     domain = sender.split('@')[-1].lower() if '@' in sender else ''
@@ -392,12 +504,7 @@ def _build_why_flagged(sender, subject, body, urls, attachment, status):
         if ext in MALICIOUS_EXTENSIONS:
             reasons.append(f'Dangerous executable attachment ({ext})')
 
-    if not reasons:
-        if status == 'safe':
-            return 'No suspicious indicators detected — email appears legitimate.'
-        return 'Low-confidence risk signals detected.'
-
-    return '; '.join(reasons)
+    return reasons
 
 
 # ── Main public API ───────────────────────────────────────────────────────────
@@ -409,6 +516,12 @@ def classify_email(sender: str, subject: str, body: str,
 
     1. Tries the trained MLP neural network first
     2. Falls back to rule-based heuristics if model not available
+    3. Applies rule escalations for the model's blind spots
+    4. Derives the status from the final risk score
+
+    Step 4 is the only place a verdict label is produced, so `status` and
+    `risk_score` cannot disagree — a caller that trusts the badge and a caller
+    that trusts the percentage reach the same conclusion.
 
     Returns a dict with all scores and metadata.
     """
@@ -428,22 +541,32 @@ def classify_email(sender: str, subject: str, body: str,
 
     if model_available:
         # Use the deep learning model
-        status, risk_score, probas = _neural_network_classify(
+        model_risk, probas = _neural_network_classify(
             sender, subject, body, urls, attachment
         )
         source = 'neural_network'
     else:
         # Fallback to rule-based
-        status, risk_score, _ = _rule_based_classify(
+        model_risk, _ = _rule_based_classify(
             sender, subject, body, urls, attachment
         )
         source = 'rule_based'
 
-    why = _build_why_flagged(sender, subject, body, urls, attachment, status)
+    # Floor the risk on blind-spot signals, then label the result. The status
+    # is derived from the final risk and never set independently of it.
+    risk_score, escalations = _escalate(model_risk, sender, attachment)
+    risk_score = round(min(risk_score, 1.0), 3)
+    status = status_from_risk(risk_score)
+
+    signals = _detected_signals(sender, subject, body, urls, attachment)
+    why = _compose_why(signals, status, source, model_risk, risk_score,
+                       escalations)
 
     return {
         'status':           status,
         'risk_score':       risk_score,
+        'model_risk_score': model_risk,
+        'escalated':        bool(escalations),
         'text_score':       text_score,
         'url_score':        url_score,
         'metadata_score':   metadata_score,

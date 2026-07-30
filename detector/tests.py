@@ -14,11 +14,13 @@ Run: python manage.py test detector
 
 import email
 import inspect
+import io
 import re
 from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 
 from ml.train_model import extract_hand_crafted_features as training_features
@@ -30,11 +32,16 @@ from .imap_connector import (
     extract_urls_from_text,
     normalize_message_id,
 )
+from .management.commands.rescore_emails import SEVERITY
 from .models import Email, GmailAccount, ScanLog
 from .ml_engine import (
+    RISK_PHISHING,
+    RISK_SUSPICIOUS,
+    _escalate,
     _feature_text,
     classify_email,
     extract_hand_crafted_features as serving_features,
+    status_from_risk,
 )
 
 
@@ -307,6 +314,105 @@ class ScoringTests(SimpleTestCase):
             urls=urls,
         )
         self.assertEqual(result['status'], 'safe')
+
+
+# ── Verdict coherence and blind-spot escalation ──────────────────────────────
+
+# A bland email whose only risk signal is the attachment. Deliberately worded to
+# score near zero on every trained feature, so any escalation is unambiguous.
+BLAND = dict(
+    subject='Updated staff handbook',
+    body='Please see the attached handbook. Best regards, HR',
+)
+
+
+class VerdictCoherenceTests(SimpleTestCase):
+    """
+    status is derived from risk_score and never set beside it, so the badge and
+    the percentage on the detail page cannot contradict each other. This used to
+    be possible: the network path labelled from argmax(probas) while risk_score
+    was computed separately from the same probabilities.
+    """
+
+    def test_bands_map_as_documented(self):
+        self.assertEqual(status_from_risk(RISK_PHISHING), 'phishing')
+        self.assertEqual(status_from_risk(RISK_SUSPICIOUS), 'suspicious')
+        self.assertEqual(status_from_risk(RISK_SUSPICIOUS - 0.001), 'safe')
+        self.assertEqual(status_from_risk(0.0), 'safe')
+        self.assertEqual(status_from_risk(1.0), 'phishing')
+
+    def test_status_always_agrees_with_risk_score(self):
+        cases = [
+            ('hr@somecompany.com',      'handbook.exe'),
+            ('billing@dhl-delivery.com','label.exe'),
+            ('hr@somecompany.com',      'handbook.pdf'),
+            ('billing@dhl-delivery.com',''),
+            ('news@techcrunch.com',     ''),
+            ('x@paypa1.xyz',            'invoice.scr'),
+        ]
+        for sender, attachment in cases:
+            with self.subTest(sender=sender, attachment=attachment):
+                r = classify_email(sender=sender, attachment=attachment, **BLAND)
+                self.assertEqual(r['status'], status_from_risk(r['risk_score']))
+
+
+class BlindSpotEscalationTests(SimpleTestCase):
+    """
+    The model cannot see attachments at all — there is no attachment feature on
+    either side of train/serve (see FeatureParityTests). Until that is a real
+    feature and the model is retrained, these floors carry the signal.
+    """
+
+    def test_dangerous_attachment_alone_is_suspicious_not_phishing(self):
+        """An .exe is dangerous but is not on its own proof of phishing."""
+        r = classify_email(sender='hr@somecompany.com',
+                           attachment='handbook.exe', **BLAND)
+        self.assertEqual(r['status'], 'suspicious')
+        self.assertTrue(r['escalated'])
+        # The precise incoherence that prompted this: high attachment score
+        # sitting next to a safe verdict.
+        self.assertGreater(r['attachment_score'], 0.6)
+        self.assertEqual(status_from_risk(r['model_risk_score']), 'safe')
+
+    def test_dangerous_attachment_with_impersonation_is_phishing(self):
+        r = classify_email(sender='billing@dhl-delivery.com',
+                           attachment='label.exe', **BLAND)
+        self.assertEqual(r['status'], 'phishing')
+        self.assertTrue(r['escalated'])
+
+    def test_benign_attachment_does_not_escalate(self):
+        for attachment in ('handbook.pdf', 'notes.docx', ''):
+            with self.subTest(attachment=attachment):
+                r = classify_email(sender='hr@somecompany.com',
+                                   attachment=attachment, **BLAND)
+                self.assertFalse(r['escalated'])
+                self.assertEqual(r['risk_score'], r['model_risk_score'])
+
+    def test_escalation_never_lowers_a_higher_model_risk(self):
+        """The floor asserts 'at least this bad', it does not overwrite."""
+        self.assertEqual(_escalate(0.9, 'a@b.com', 'x.exe'), (0.9, []))
+        self.assertEqual(_escalate(0.9, 'billing@dhl-delivery.com', 'x.exe'),
+                         (0.9, []))
+        risk, reasons = _escalate(0.3, 'billing@dhl-delivery.com', 'x.exe')
+        self.assertEqual(risk, RISK_PHISHING)
+        self.assertTrue(reasons)
+
+    def test_an_override_is_distinguishable_from_a_model_verdict(self):
+        """
+        An escalated verdict and a model verdict must not read identically on
+        the page, or the override is invisible.
+        """
+        escalated = classify_email(sender='hr@somecompany.com',
+                                   attachment='handbook.exe', **BLAND)
+        self.assertIn('rule override', escalated['why_flagged'])
+        self.assertIn('.exe', escalated['why_flagged'])
+        # States what the model said on its own, so the override is auditable.
+        self.assertIn('2%', escalated['why_flagged'])
+
+        plain = classify_email(sender='hr@somecompany.com',
+                              attachment='handbook.pdf', **BLAND)
+        self.assertIn('neural network', plain['why_flagged'])
+        self.assertNotIn('rule override', plain['why_flagged'])
 
 
 # ── Train/serve feature parity ───────────────────────────────────────────────
@@ -1151,3 +1257,372 @@ class BackfillCommandTests(TestCase):
 
         self.assertIn('No active account', output)
         self.assertEqual(FakeConnector.calls, [])
+
+
+# ── Re-scoring stored rows onto the current engine ───────────────────────────
+
+class RescoreCommandTests(TestCase):
+    """
+    A stored verdict was produced by whatever the engine looked like when the
+    row was written, so an engine change leaves the table holding two regimes.
+    rescore_emails brings old rows forward from data already in the database —
+    no Gmail access, and it reaches rows backfill_urls cannot, because those are
+    selected by account.
+    """
+
+    # Bland wording, risk only in the attachment: the model scores this near
+    # zero, so the escalation floor is what moves it.
+    EXE_ROW = dict(
+        attachment_name='handbook.exe',
+        has_attachment=True,
+    )
+
+    def make_email(self, **overrides):
+        defaults = dict(
+            sender='hr@somecompany.com',
+            subject='Updated staff handbook',
+            body='Please see the attached handbook. Best regards, HR',
+            status='safe',
+            risk_score=0.02,
+            extracted_urls=[],
+        )
+        defaults.update(overrides)
+        return Email.objects.create(**defaults)
+
+    def run_command(self, *args):
+        out = StringIO()
+        call_command('rescore_emails', *args, stdout=out, stderr=out)
+        return out.getvalue()
+
+    # ── Reaches rows backfill_urls cannot ────────────────────────────────────
+
+    def test_rescores_a_seeded_row_with_no_account_or_message_id(self):
+        """
+        backfill_urls filters on account=<account>, so it selects none of these.
+        This command must not need an account, a Message-ID, or the network.
+        """
+        email_obj = self.make_email(**self.EXE_ROW)
+        self.assertIsNone(email_obj.account)
+        self.assertEqual(email_obj.message_id, '')
+
+        self.run_command()
+        email_obj.refresh_from_db()
+        self.assertEqual(email_obj.status, 'suspicious')
+
+    def test_is_idempotent(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        self.run_command()
+        email_obj.refresh_from_db()
+        first = (email_obj.status, email_obj.risk_score, email_obj.why_flagged)
+
+        self.run_command()
+        email_obj.refresh_from_db()
+        self.assertEqual(
+            (email_obj.status, email_obj.risk_score, email_obj.why_flagged),
+            first,
+        )
+
+    # ── Direction asymmetry ──────────────────────────────────────────────────
+
+    def test_escalations_are_applied_by_default(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'suspicious')
+        self.assertIn('Escalations (applied)', output)
+
+    def test_de_escalations_are_listed_but_not_applied_by_default(self):
+        """
+        Lowering a verdict un-flags mail someone may already have acted on, so a
+        default run reports it and leaves the row as it is.
+        """
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        output = self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'phishing')
+        self.assertEqual(email_obj.risk_score, 0.91)
+        self.assertIn('De-escalations (NOT applied)', output)
+        self.assertIn('--apply-de-escalations', output)
+
+    def test_de_escalations_are_applied_only_with_the_flag(self):
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        self.run_command('--apply-de-escalations')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertLess(email_obj.risk_score, RISK_SUSPICIOUS)
+
+    def test_a_default_run_never_lowers_any_verdict(self):
+        rows = [
+            self.make_email(status='phishing', risk_score=0.91),
+            self.make_email(status='suspicious', risk_score=0.44),
+            self.make_email(**self.EXE_ROW),
+        ]
+        before = [(e.id, e.status) for e in rows]
+        self.run_command()
+
+        for email_id, old in before:
+            with self.subTest(email_id=email_id):
+                new = Email.objects.get(id=email_id).status
+                self.assertGreaterEqual(SEVERITY[new], SEVERITY[old])
+
+    # ── Refusal when the model is missing ────────────────────────────────────
+
+    def test_refuses_to_run_without_the_trained_model(self):
+        """
+        Re-scoring through the rule-based fallback would swap model verdicts for
+        rule verdicts on every row, with nothing in the data recording it.
+        """
+        email_obj = self.make_email(status='phishing', risk_score=0.91)
+        with mock.patch(
+            'detector.management.commands.rescore_emails._load_model',
+            return_value=False,
+        ):
+            with self.assertRaises(CommandError) as ctx:
+                self.run_command()
+
+        self.assertIn('rule-based fallback', str(ctx.exception))
+        email_obj.refresh_from_db()
+        self.assertEqual(email_obj.status, 'phishing')
+
+    # ── Bookkeeping ──────────────────────────────────────────────────────────
+
+    def test_dry_run_writes_nothing(self):
+        email_obj = self.make_email(**self.EXE_ROW)
+        output = self.run_command('--dry-run')
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertEqual(email_obj.risk_score, 0.02)
+        self.assertIn('dry-run', output)
+        self.assertEqual(ScanLog.objects.count(), 0)
+
+    def test_an_escalation_raises_an_alert(self):
+        """The original sync never alerted on this row; the escalation must."""
+        self.make_email(**self.EXE_ROW)
+        self.run_command()
+
+        log = ScanLog.objects.get()
+        self.assertEqual(log.level, 'warning')
+        self.assertIn('rescore_emails', log.message)
+
+    def test_the_folder_tag_the_sync_recorded_is_preserved(self):
+        email_obj = self.make_email(
+            why_flagged='[Found in Spam] No suspicious indicators detected.',
+            **self.EXE_ROW
+        )
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertTrue(email_obj.why_flagged.startswith('[Found in Spam] '))
+        self.assertIn('rule override', email_obj.why_flagged)
+
+    def test_no_folder_tag_is_invented_for_mail_that_had_none(self):
+        email_obj = self.make_email(why_flagged='', **self.EXE_ROW)
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertNotIn('[Found in', email_obj.why_flagged)
+
+    def test_scores_are_refreshed_even_when_the_verdict_does_not_move(self):
+        """
+        Drift can move the numbers without crossing a band. Leaving stale scores
+        beside a current verdict is the incoherence this work set out to remove.
+        """
+        email_obj = self.make_email(attachment_name='notes.pdf',
+                                    has_attachment=True,
+                                    attachment_score=0.99)
+        self.run_command()
+        email_obj.refresh_from_db()
+
+        self.assertEqual(email_obj.status, 'safe')
+        self.assertLess(email_obj.attachment_score, 0.5)
+
+    def test_unknown_account_is_rejected(self):
+        self.make_email()
+        with self.assertRaises(CommandError) as ctx:
+            self.run_command('--account', 'nobody@gmail.com')
+        self.assertIn('No emails found', str(ctx.exception))
+
+
+# ── Console output under a redirected Windows console ─────────────────────────
+
+def codepage_stream(encoding):
+    """
+    A stdout stand-in that behaves like a redirected Windows console.
+
+    Python uses UTF-8 for an *attached* console (PEP 528, io._WindowsConsoleIO)
+    but falls back to the locale encoding the moment stdout is piped or
+    redirected to a file, which is what happens under CI, a task scheduler, or
+    `cmd > log.txt`. StringIO accepts any codepoint and so hides this entirely.
+    errors='strict' is the point: it raises exactly as the real stream does.
+    """
+    buf = io.BytesIO()
+    return buf, io.TextIOWrapper(buf, encoding=encoding, errors='strict',
+                                 newline='')
+
+
+class ConsoleEncodingTests(TestCase):
+    """
+    Non-ASCII in console output crashes these commands when stdout is
+    redirected. Not hypothetically: backfill_urls wrote a U+2500 box rule per
+    account before any verdict changed, so the command could not complete a
+    single run under redirection.
+
+    Which codepoints raise depends on the codepage, so asserting ASCII is the
+    only portable rule. U+2014 EM DASH happens to be encodable in cp1252 and so
+    survived there, but fails on cp437/cp850; U+2500 fails on cp1252 and
+    succeeds on cp437; U+2192 fails on all of them.
+    """
+
+    CODEPAGES = ('cp1252', 'cp437', 'cp850', 'ascii')
+
+    def run_on_codepage(self, command, encoding, *args):
+        buf, stream = codepage_stream(encoding)
+        call_command(command, *args, stdout=stream, stderr=stream)
+        stream.flush()
+        return buf.getvalue().decode(encoding)
+
+    def setUp(self):
+        FakeConnector.served = [BACKFILL_FIXTURE]
+        FakeConnector.label = 'All Mail'
+        FakeConnector.calls = []
+        patcher = mock.patch(
+            'detector.management.commands.backfill_urls.GmailIMAPConnector',
+            FakeConnector,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.account = GmailAccount(email_address='user@gmail.com')
+        self.account.app_password = 'abcd efgh ijkl mnop'
+        self.account.save()
+
+    # ── Interpolated data, not literals ──────────────────────────────────────
+
+    # A real stored subject from db.sqlite3 (row 10). U+2014 is encodable in
+    # cp1252 as byte 0x97 but not in cp437/cp850/ascii, so it exercises both
+    # sides of the degradation.
+    NON_ASCII_SUBJECT = 'Remote job offer — $3,000/month work from home'
+
+    def test_a_non_ascii_subject_degrades_instead_of_raising(self):
+        """
+        Subjects are attacker-supplied and never guaranteed ASCII, so the fix
+        cannot be "make every literal ASCII". handle() relaxes the stream's
+        error handler, which covers every interpolated field at once and leaves
+        the stored data alone — only the rendering degrades.
+        """
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                stored = Email.objects.create(
+                    sender='hr@remote-jobs-worldwide.net',
+                    subject=self.NON_ASCII_SUBJECT,
+                    body='We found your profile online.',
+                    status='phishing', risk_score=0.91, extracted_urls=[],
+                )
+                out = self.run_on_codepage('rescore_emails', encoding)
+
+                # The row is reported, and the run completed.
+                self.assertIn('De-escalations', out)
+                self.assertIn('Remote job offer', out)
+
+                if encoding == 'cp1252':
+                    # Encodable here: full fidelity is preserved.
+                    self.assertIn('—', out)
+                else:
+                    # Not encodable: one character degrades, nothing raises.
+                    self.assertIn('?', out)
+                    self.assertNotIn('—', out)
+
+                # The stored subject is untouched either way.
+                stored.refresh_from_db()
+                self.assertEqual(stored.subject, self.NON_ASCII_SUBJECT)
+
+    def test_backfill_output_is_encodable_on_every_codepage(self):
+        """
+        Covers the per-account header, which fires unconditionally, and the
+        old_status -> new_status transition line.
+
+        Now that handle() relaxes the error handler this asserts the command
+        completes rather than that every byte was encodable; the ASCII rule for
+        our own literals is enforced statically below.
+        """
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                Email.objects.create(
+                    account=self.account,
+                    sender='no-reply@dhl-delivery.top',
+                    subject='Package on hold',
+                    body='Dear User, confirm now to release it.',
+                    message_id='<abc123@dhl-delivery.top>',
+                    status='safe',
+                    risk_score=0.1,
+                    extracted_urls=[],
+                )
+                out = self.run_on_codepage('backfill_urls', encoding)
+                self.assertIn('user@gmail.com', out)
+
+    def test_rescore_output_is_encodable_on_every_codepage(self):
+        """Covers both the escalation and the de-escalation report paths."""
+        for encoding in self.CODEPAGES:
+            with self.subTest(encoding=encoding):
+                Email.objects.all().delete()
+                Email.objects.create(          # escalates
+                    sender='hr@somecompany.com',
+                    subject='Updated staff handbook',
+                    body='Please see the attached handbook. Best regards, HR',
+                    attachment_name='handbook.exe', has_attachment=True,
+                    status='safe', risk_score=0.02, extracted_urls=[],
+                )
+                Email.objects.create(          # de-escalates
+                    sender='hr@somecompany.com',
+                    subject='Updated staff handbook',
+                    body='Please see the attached handbook. Best regards, HR',
+                    status='phishing', risk_score=0.91, extracted_urls=[],
+                )
+                out = self.run_on_codepage('rescore_emails', encoding)
+                self.assertIn('De-escalations', out)
+                self.assertIn('Escalations', out)
+
+    def test_every_console_literal_in_these_commands_is_ascii(self):
+        """
+        A static guard, because the crashing site only executes when an account
+        exists and a run that finds no accounts skips it. Docstrings and DB text
+        are excluded: they are never encoded to the console codepage. seeded
+        email bodies legitimately contain non-ASCII and are not console output.
+        """
+        import ast
+        import pathlib
+
+        for name in ('backfill_urls.py', 'rescore_emails.py'):
+            path = (pathlib.Path(__file__).parent / 'management' / 'commands'
+                    / name)
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+
+            # Collect literals that flow into self.stdout/self.stderr writes or
+            # a CommandError, i.e. everything that reaches the console.
+            offenders = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = ''
+                if isinstance(node.func, ast.Attribute):
+                    target = node.func.attr
+                elif isinstance(node.func, ast.Name):
+                    target = node.func.id
+                if target not in ('write', 'CommandError'):
+                    continue
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Constant)
+                            and isinstance(sub.value, str)
+                            and not sub.value.isascii()):
+                        offenders.append(
+                            f'{name}:{sub.lineno} '
+                            f'{ascii(sub.value[:50])}'
+                        )
+
+            self.assertEqual(offenders, [], f'non-ASCII console output: {offenders}')

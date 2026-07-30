@@ -11,6 +11,8 @@ import random
 from detector.models import Email, ScanLog
 from detector.ml_engine import classify_email
 
+from ._console import make_console_tolerant
+
 SAMPLE_EMAILS = [
     # ── PHISHING (Nazario-style) ──────────────────────────────────────────
     {
@@ -124,6 +126,11 @@ class Command(BaseCommand):
     help = 'Seed the database with sample phishing and safe emails'
 
     def handle(self, *args, **options):
+        # The fixture subjects below contain em dashes and are echoed per row,
+        # so this command hits the same redirected-stdout problem. See
+        # _console.py.
+        make_console_tolerant(self.stdout, self.stderr)
+
         if Email.objects.exists():
             self.stdout.write(self.style.WARNING(
                 'Database already has data. Run with --flush to reset.'

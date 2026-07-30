@@ -39,6 +39,8 @@ from detector.imap_connector import GmailIMAPConnector, normalize_message_id
 from detector.ml_engine import classify_email
 from detector.models import Email, ScanLog, GmailAccount
 
+from ._console import make_console_tolerant
+
 # The original sync recorded which folder it found a message in, as a
 # '[Found in Spam] ' prefix on why_flagged. A backfill searches All Mail,
 # which cannot tell us that, so the recorded value is preserved rather than
@@ -75,6 +77,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # Email subjects are interpolated into the per-row progress lines and
+        # are not guaranteed ASCII, so let them degrade rather than kill the run
+        # when stdout is redirected to a non-UTF-8 stream. See _console.py.
+        make_console_tolerant(self.stdout, self.stderr)
+
         accounts = GmailAccount.objects.filter(is_active=True)
         if options['account']:
             accounts = accounts.filter(email_address=options['account'])
@@ -93,7 +100,7 @@ class Command(BaseCommand):
         totals = {'repaired': 0, 'urls_found': 0, 'unmatched': 0, 'reclassified': 0}
 
         for account in accounts:
-            self.stdout.write(self.style.HTTP_INFO(f'\n── {account.email_address} ──'))
+            self.stdout.write(self.style.HTTP_INFO(f'\n-- {account.email_address} --'))
             self._repair_account(account, options, totals)
 
         self.stdout.write('')
@@ -107,7 +114,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"{totals['unmatched']} email(s) could not be found in Gmail "
                 f"(deleted, moved out of Inbox/Spam, or seeded rather than synced) "
-                f"— these keep their current data."
+                f"- these keep their current data."
             ))
 
     # ── Per-account work ─────────────────────────────────────────────────────
@@ -130,7 +137,7 @@ class Command(BaseCommand):
         if skipped_no_id:
             self.stdout.write(
                 f'  {skipped_no_id} email(s) have no Message-ID and cannot be '
-                f'matched back to Gmail — skipping.'
+                f'matched back to Gmail - skipping.'
             )
             totals['unmatched'] += skipped_no_id
 
@@ -213,7 +220,7 @@ class Command(BaseCommand):
 
         change = f'{len(urls)} link(s) (via {found_in})'
         if new_status != old_status:
-            change += f', {old_status} → {new_status}'
+            change += f', {old_status} -> {new_status}'
         self.stdout.write(f'    {"[dry-run] " if options["dry_run"] else ""}'
                           f'{email_obj.subject[:55]!r}: {change}')
 
